@@ -447,6 +447,8 @@ if st.session_state.diagram_type == "Flowchart":
 
     col1, col2 = st.columns(2)
     with col1:
+        st.markdown("### Flowchart Preview")
+        render_mermaid_preview(mermaid_text, height=420)
         st.markdown("### Mermaid Export")
         st.code(mermaid_text, language="mermaid")
         st.download_button(

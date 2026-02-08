@@ -44,3 +44,17 @@ def test_sequence_parser_extracts_participants_and_messages():
     ids = {node["id"] for node in graph["nodes"]}
     assert ids == {"A", "B"}
     assert len(graph["edges"]) == 2
+
+
+def test_graph_to_mermaid_flowchart_uses_graph_header():
+    graph = {
+        "nodes": [
+            {"id": "start", "label": "Start", "type": "input"},
+            {"id": "end", "label": "End", "type": "output"},
+        ],
+        "edges": [{"id": "e1", "source": "start", "target": "end", "label": ""}],
+    }
+    code = graph_to_mermaid("Flowchart", graph)
+
+    assert code.startswith("graph TD;\n")
+    assert "start --> end;" in code
