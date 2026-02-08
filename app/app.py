@@ -1,6 +1,7 @@
 from pathlib import Path
 import sys
 import html
+import os
 
 import streamlit as st
 import streamlit.components.v1 as components
@@ -23,6 +24,7 @@ from src.mermaid_generator.canvas_graph import (  # noqa: E402
 from src.mermaid_generator.orchestrator import (  # noqa: E402
     FlowchartOrchestrator,
     MermaidDiagramOrchestrator,
+    OpenAIJSONClient,
 )
 from src.mermaid_generator.templates import (  # noqa: E402
     DIAGRAM_TYPES,
@@ -64,14 +66,12 @@ from src.mermaid_generator.session_memory import (  # noqa: E402
 )
 
 
-@st.cache_resource
 def get_orchestrator() -> FlowchartOrchestrator:
-    return FlowchartOrchestrator()
+    return FlowchartOrchestrator(llm_client=get_runtime_llm_client())
 
 
-@st.cache_resource
 def get_mermaid_orchestrator() -> MermaidDiagramOrchestrator:
-    return MermaidDiagramOrchestrator()
+    return MermaidDiagramOrchestrator(llm_client=get_runtime_llm_client())
 
 
 @st.cache_resource
@@ -79,14 +79,25 @@ def get_diagram_repository() -> DiagramRepository:
     return DiagramRepository(ROOT_DIR / ".diagram_data")
 
 
-@st.cache_resource
 def get_diagram_assistant() -> DiagramDecisionAssistant:
-    return DiagramDecisionAssistant()
+    return DiagramDecisionAssistant(llm_client=get_runtime_llm_client())
 
 
-@st.cache_resource
 def get_parent_class_assistant() -> ParentClassAssistant:
-    return ParentClassAssistant()
+    return ParentClassAssistant(llm_client=get_runtime_llm_client())
+
+
+def get_runtime_llm_client() -> OpenAIJSONClient:
+    key_source = str(st.session_state.get("llm_key_source", "Environment"))
+    env_key = str(os.getenv("OPENAI_API_KEY", "")).strip()
+    app_key = str(st.session_state.get("llm_api_key", "")).strip()
+    api_key = app_key if key_source == "Input in App" else env_key
+    model = str(st.session_state.get("llm_model", "")).strip() or str(
+        os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+    ).strip()
+    if not model:
+        model = "gpt-4o-mini"
+    return OpenAIJSONClient(api_key=api_key, model=model)
 
 
 def to_flow_state(nodes_data: list, edges_data: list, positions: dict) -> StreamlitFlowState:
@@ -201,6 +212,12 @@ def ensure_state() -> None:
         st.session_state.session_memory_by_type = {}
     if "llm_mode_by_type" not in st.session_state:
         st.session_state.llm_mode_by_type = {}
+    if "llm_key_source" not in st.session_state:
+        st.session_state.llm_key_source = "Environment"
+    if "llm_api_key" not in st.session_state:
+        st.session_state.llm_api_key = ""
+    if "llm_model" not in st.session_state:
+        st.session_state.llm_model = str(os.getenv("OPENAI_MODEL", "gpt-4o-mini"))
 
     st.session_state.flow_state = coerce_flow_state(st.session_state.flow_state)
 
@@ -858,15 +875,29 @@ def render_mermaid_preview(mermaid_code: str, height: int = 520) -> None:
   <div id="render_error" style="color:#b91c1c;font-family:monospace;"></div>
 </div>
 <script>
+  function formatMermaidError(err) {
+    if (!err) return "unknown error";
+    if (typeof err === "string") return err;
+    if (err.message) return err.message;
+    if (err.str) return err.str;
+    try {
+      return JSON.stringify(err, null, 2);
+    } catch (_) {
+      return String(err);
+    }
+  }
+
   function renderMermaid() {{
     try {{
       mermaid.initialize({{ startOnLoad: false, securityLevel: "loose" }});
       const nodes = document.querySelectorAll(".mermaid");
       mermaid.run({{ nodes }}).catch((err) => {{
-        document.getElementById("render_error").textContent = "Mermaid render error: " + err;
+        document.getElementById("render_error").textContent =
+          "Mermaid render error: " + formatMermaidError(err);
       }});
     }} catch (err) {{
-      document.getElementById("render_error").textContent = "Mermaid init error: " + err;
+      document.getElementById("render_error").textContent =
+        "Mermaid init error: " + formatMermaidError(err);
     }}
   }}
 
@@ -905,6 +936,34 @@ if not st.session_state.default_template_loaded:
 selected_mode = st.session_state.edit_mode_by_type.get(st.session_state.diagram_type, "Manual")
 
 with st.sidebar:
+    st.markdown("### LLM Settings")
+    st.session_state.llm_key_source = st.radio(
+        "API Key Source",
+        ["Environment", "Input in App"],
+        index=0 if st.session_state.llm_key_source == "Environment" else 1,
+        horizontal=True,
+        key="llm_key_source_radio",
+    )
+    st.session_state.llm_model = st.text_input(
+        "Model",
+        value=st.session_state.llm_model or "gpt-4o-mini",
+        key="llm_model_input",
+    ).strip() or "gpt-4o-mini"
+    if st.session_state.llm_key_source == "Input in App":
+        st.session_state.llm_api_key = st.text_input(
+            "OpenAI API Key",
+            value=st.session_state.llm_api_key,
+            type="password",
+            key="llm_api_key_input",
+            help="Stored only in current Streamlit session.",
+        ).strip()
+        st.caption(
+            "Key status: configured" if st.session_state.llm_api_key else "Key status: not set"
+        )
+    else:
+        has_env_key = bool(str(os.getenv("OPENAI_API_KEY", "")).strip())
+        st.caption(f"Env key status: {'configured' if has_env_key else 'not set'}")
+
     st.markdown("### Diagram Type")
     diagram_type = st.selectbox("Type", DIAGRAM_TYPES, key="diagram_type")
     current_mode = st.session_state.edit_mode_by_type.get(
@@ -1090,7 +1149,7 @@ if st.session_state.diagram_type == "Flowchart":
         )
 
     if selected_mode == "Orchestration":
-        st.caption("Set OPENAI_API_KEY to enable real LLM orchestration.")
+        st.caption("Configure API key in LLM Settings (Environment or Input in App) to enable real LLM orchestration.")
 else:
     diagram_type = st.session_state.diagram_type
     capabilities = get_editor_capabilities(diagram_type, selected_mode)
@@ -1154,4 +1213,4 @@ else:
             st.caption(agent_state.get("message", ""))
             st.markdown("### Source")
             st.caption(agent_state.get("source", "fallback"))
-            st.caption("Set OPENAI_API_KEY to enable real LLM orchestration.")
+            st.caption("Configure API key in LLM Settings (Environment or Input in App) to enable real LLM orchestration.")
