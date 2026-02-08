@@ -120,9 +120,10 @@ def get_mermaid_code(diagram_type: str) -> str:
     return str(st.session_state.mermaid_code_by_type.get(diagram_type, ""))
 
 
-def set_mermaid_code(diagram_type: str, code: str) -> None:
+def set_mermaid_code(diagram_type: str, code: str, sync_editor: bool = False) -> None:
     st.session_state.mermaid_code_by_type[diagram_type] = code
-    st.session_state[mermaid_editor_key(diagram_type)] = code
+    if sync_editor:
+        st.session_state[mermaid_editor_key(diagram_type)] = code
 
 
 def apply_graph_data(graph_data: dict, impact_message: str) -> None:
@@ -183,7 +184,7 @@ def run_mermaid_agent_turn(diagram_type: str, user_message: str) -> None:
         current_code=current_code,
     )
     history.append({"role": "assistant", "content": turn.assistant_message})
-    set_mermaid_code(diagram_type, turn.mermaid_code)
+    set_mermaid_code(diagram_type, turn.mermaid_code, sync_editor=True)
     st.session_state.mermaid_agent_state_by_type[diagram_type] = {
         "phase": turn.phase,
         "source": turn.source,
@@ -312,7 +313,11 @@ with st.sidebar:
             )
             st.caption(lookup[selected_mermaid_id]["description"])
             if st.button("Load Mermaid Template", use_container_width=True):
-                set_mermaid_code(diagram_type, get_mermaid_template(diagram_type, selected_mermaid_id))
+                set_mermaid_code(
+                    diagram_type,
+                    get_mermaid_template(diagram_type, selected_mermaid_id),
+                    sync_editor=True,
+                )
         else:
             st.info("No predefined templates for this diagram type yet.")
 
