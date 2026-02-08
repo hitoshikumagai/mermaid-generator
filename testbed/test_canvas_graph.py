@@ -58,3 +58,42 @@ def test_graph_to_mermaid_flowchart_uses_graph_header():
 
     assert code.startswith("graph TD;\n")
     assert "start --> end;" in code
+
+
+def test_sequence_roundtrip_preserves_return_message_direction():
+    source = (
+        "sequenceDiagram\n"
+        "    participant C as Client\n"
+        "    participant A as API\n"
+        "    C->>A: request\n"
+        "    A-->>C: response\n"
+    )
+    graph = parse_mermaid_to_graph("Sequence", source)
+    code = graph_to_mermaid("Sequence", graph)
+
+    assert "C->>A: request" in code
+    assert "A-->>C: response" in code
+
+
+def test_class_roundtrip_preserves_inheritance_relation():
+    source = (
+        "classDiagram\n"
+        "    class Parent\n"
+        "    class Child\n"
+        "    Parent <|-- Child\n"
+    )
+    graph = parse_mermaid_to_graph("Class", source)
+    code = graph_to_mermaid("Class", graph)
+
+    assert "Child --|> Parent" in code
+
+
+def test_er_roundtrip_preserves_cardinality_marker():
+    source = (
+        "erDiagram\n"
+        "    USER ||--|{ ORDER : places\n"
+    )
+    graph = parse_mermaid_to_graph("ER", source)
+    code = graph_to_mermaid("ER", graph)
+
+    assert "USER ||--|{ ORDER : places" in code

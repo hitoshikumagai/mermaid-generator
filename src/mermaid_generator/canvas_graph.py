@@ -9,6 +9,35 @@ EdgeData = Dict[str, str]
 START_NODE_ID = "__start__"
 END_NODE_ID = "__end__"
 
+SEQUENCE_ARROW_TO_TYPE = {
+    "->>": "sync",
+    "-->>": "return",
+    "-)": "async",
+    "--)": "async",
+}
+
+CLASS_ARROW_RULES = [
+    ("<|--", "extends", True),
+    ("--|>", "extends", False),
+    ("<|..", "implements", True),
+    ("..|>", "implements", False),
+    ("<--", "association", True),
+    ("-->", "association", False),
+    ("<..", "dependency", True),
+    ("..>", "dependency", False),
+    ("*--", "composition", False),
+    ("o--", "aggregation", False),
+]
+
+CLASS_RELATION_TO_ARROW = {
+    "extends": "--|>",
+    "implements": "..|>",
+    "composition": "*--",
+    "aggregation": "o--",
+    "dependency": "..>",
+    "association": "-->",
+}
+
 
 def parse_mermaid_to_graph(diagram_type: str, mermaid_code: str) -> GraphData:
     code = (mermaid_code or "").strip()
@@ -72,21 +101,31 @@ def _parse_sequence(code: str) -> GraphData:
         if ":" not in line:
             continue
         relation, label = line.split(":", 1)
-        match = re.match(r"^([A-Za-z0-9_]+)\s*[-.<>=xo]+>\s*([A-Za-z0-9_]+)$", relation.strip())
+        match = re.match(
+            r"^([A-Za-z0-9_]+)\s*([-.<>=xo]+\>|[-.<>xo]+\))\s*([A-Za-z0-9_]+)$",
+            relation.strip(),
+        )
         if not match:
             continue
         source = _safe_id(match.group(1))
-        target = _safe_id(match.group(2))
+        arrow = match.group(2).strip()
+        target = _safe_id(match.group(3))
         for node_id in (source, target):
             if node_id and node_id not in node_ids:
                 node_ids.add(node_id)
                 nodes.append({"id": node_id, "label": node_id, "type": "default"})
+        label_text = label.strip()
+        message_type = SEQUENCE_ARROW_TO_TYPE.get(arrow, "sync")
+        if message_type == "sync":
+            edge_label = label_text
+        else:
+            edge_label = f"{message_type}: {label_text}".strip(": ")
         edges.append(
             {
                 "id": f"e{len(edges) + 1}",
                 "source": source,
                 "target": target,
-                "label": label.strip(),
+                "label": edge_label,
             }
         )
 
@@ -143,14 +182,16 @@ def _parse_er(code: str) -> GraphData:
             continue
 
         relation = re.match(
-            r"^([A-Za-z][A-Za-z0-9_]*)\s+\S+\s+([A-Za-z][A-Za-z0-9_]*)\s*:\s*(.*)$",
+            r"^([A-Za-z][A-Za-z0-9_]*)\s+([|o}{]{1,2}--[|o}{]{1,2})\s+([A-Za-z][A-Za-z0-9_]*)(?:\s*:\s*(.*))?$",
             line,
         )
         if not relation:
             continue
         source = _safe_id(relation.group(1))
-        target = _safe_id(relation.group(2))
-        label = relation.group(3).strip()
+        cardinality = relation.group(2).strip()
+        target = _safe_id(relation.group(3))
+        relation_label = (relation.group(4) or "").strip()
+        label = f"{cardinality} {relation_label}".strip()
         for node_id in (source, target):
             if node_id not in node_ids:
                 node_ids.add(node_id)
@@ -179,25 +220,11 @@ def _parse_class(code: str) -> GraphData:
                 nodes.append({"id": node_id, "label": node_id, "type": "default"})
             continue
 
-        relation = re.match(
-            r"^([A-Za-z_][A-Za-z0-9_]*)\s+[-.<|*o]+>\s+([A-Za-z_][A-Za-z0-9_]*)(?:\s*:\s*(.*))?$",
-            line,
-        )
-        if not relation:
-            relation = re.match(
-                r"^([A-Za-z_][A-Za-z0-9_]*)\s+<[-.<|*o]+\s+([A-Za-z_][A-Za-z0-9_]*)(?:\s*:\s*(.*))?$",
-                line,
-            )
-            if relation:
-                source = _safe_id(relation.group(2))
-                target = _safe_id(relation.group(1))
-                label = (relation.group(3) or "").strip()
-            else:
-                continue
-        else:
-            source = _safe_id(relation.group(1))
-            target = _safe_id(relation.group(2))
-            label = (relation.group(3) or "").strip()
+        parsed = _parse_class_relation_line(line)
+        if not parsed:
+            continue
+        source, target, relation_type, relation_text = parsed
+        label = relation_type if not relation_text else f"{relation_type} {relation_text}"
 
         for node_id in (source, target):
             if node_id not in node_ids:
@@ -260,8 +287,9 @@ def _sequence_to_mermaid(nodes: List[NodeData], edges: List[EdgeData]) -> str:
         else:
             lines.append(f"    participant {node_id}")
     for edge in edges:
-        label = edge.get("label", "").strip() or "message"
-        lines.append(f"    {edge['source']}->>{edge['target']}: {label}")
+        message_type, message = _split_sequence_edge_label(edge.get("label", ""))
+        arrow = _sequence_type_to_arrow(message_type)
+        lines.append(f"    {edge['source']}{arrow}{edge['target']}: {message or 'message'}")
     return "\n".join(lines) + "\n"
 
 
@@ -283,8 +311,8 @@ def _state_to_mermaid(nodes: List[NodeData], edges: List[EdgeData]) -> str:
 def _er_to_mermaid(nodes: List[NodeData], edges: List[EdgeData]) -> str:
     lines = ["erDiagram"]
     for edge in edges:
-        label = edge.get("label", "").strip() or "relates_to"
-        lines.append(f"    {edge['source']} ||--o{{ {edge['target']} : {label}")
+        cardinality, relation = _split_er_edge_label(edge.get("label", ""))
+        lines.append(f"    {edge['source']} {cardinality} {edge['target']} : {relation}")
     if not edges and len(nodes) >= 2:
         lines.append(f"    {nodes[0]['id']} ||--o{{ {nodes[1]['id']} : relates_to")
     return "\n".join(lines) + "\n"
@@ -295,11 +323,12 @@ def _class_to_mermaid(nodes: List[NodeData], edges: List[EdgeData]) -> str:
     for node in nodes:
         lines.append(f"    class {node['id']}")
     for edge in edges:
-        label = edge.get("label", "").strip()
-        if label:
-            lines.append(f"    {edge['source']} --> {edge['target']} : {label}")
+        relation_type, relation_text = _split_class_edge_label(edge.get("label", ""))
+        arrow = CLASS_RELATION_TO_ARROW.get(relation_type, "-->")
+        if relation_text:
+            lines.append(f"    {edge['source']} {arrow} {edge['target']} : {relation_text}")
         else:
-            lines.append(f"    {edge['source']} --> {edge['target']}")
+            lines.append(f"    {edge['source']} {arrow} {edge['target']}")
     return "\n".join(lines) + "\n"
 
 
@@ -391,3 +420,73 @@ def _parse_gantt_spec(spec: str, label: str) -> Tuple[str, str]:
         dependency = dep_match.group(1)
 
     return node_id, dependency
+
+
+def _split_sequence_edge_label(label: str) -> Tuple[str, str]:
+    raw = (label or "").strip()
+    if ":" in raw:
+        maybe_type, message = raw.split(":", 1)
+        message_type = maybe_type.strip().lower()
+        if message_type in {"sync", "async", "return"}:
+            return message_type, message.strip()
+    return "sync", raw
+
+
+def _sequence_type_to_arrow(message_type: str) -> str:
+    normalized = (message_type or "sync").strip().lower()
+    if normalized == "return":
+        return "-->>"
+    if normalized == "async":
+        return "-)"
+    return "->>"
+
+
+def _split_er_edge_label(label: str) -> Tuple[str, str]:
+    raw = (label or "").strip()
+    if raw:
+        parts = raw.split(" ", 1)
+        if len(parts) == 2 and "--" in parts[0]:
+            return parts[0], parts[1].strip() or "relates_to"
+    return "||--o{", raw or "relates_to"
+
+
+def _parse_class_relation_line(line: str):
+    relation_text = ""
+    relation_part = line
+    if ":" in line:
+        relation_part, relation_text = line.split(":", 1)
+        relation_text = relation_text.strip()
+    relation_part = relation_part.strip()
+
+    for arrow, relation_type, reverse in CLASS_ARROW_RULES:
+        token = f" {arrow} "
+        if token not in relation_part:
+            continue
+        left, right = relation_part.split(token, 1)
+        left_id = _safe_id(left.strip())
+        right_id = _safe_id(right.strip())
+        if not left_id or not right_id:
+            return None
+        if reverse:
+            source = right_id
+            target = left_id
+        else:
+            source = left_id
+            target = right_id
+        return source, target, relation_type, relation_text
+    return None
+
+
+def _split_class_edge_label(label: str) -> Tuple[str, str]:
+    raw = (label or "").strip()
+    if not raw:
+        return "association", ""
+    if " " in raw:
+        relation_type, relation_text = raw.split(" ", 1)
+        relation_type = relation_type.strip().lower()
+        if relation_type in CLASS_RELATION_TO_ARROW:
+            return relation_type, relation_text.strip()
+    relation_type = raw.lower()
+    if relation_type in CLASS_RELATION_TO_ARROW:
+        return relation_type, ""
+    return "association", raw

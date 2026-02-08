@@ -604,6 +604,19 @@ with st.sidebar:
         else:
             st.info("No predefined templates for this diagram type yet.")
 
+        with st.expander("Import Mermaid", expanded=False):
+            import_key = f"import_mermaid_{diagram_type.lower()}"
+            if import_key not in st.session_state:
+                st.session_state[import_key] = get_mermaid_code(diagram_type)
+            import_code = st.text_area(
+                "Paste Mermaid Code",
+                key=import_key,
+                height=180,
+            )
+            if st.button("Load From Mermaid", key=f"load_mermaid_{diagram_type.lower()}"):
+                set_mermaid_code(diagram_type, import_code, sync_editor=True)
+                set_canvas_graph(diagram_type, parse_mermaid_to_graph(diagram_type, import_code))
+
         if selected_mode == "Orchestration":
             agent_state = st.session_state.mermaid_agent_state_by_type.get(
                 diagram_type, {"phase": "initial", "source": "fallback", "message": ""}
