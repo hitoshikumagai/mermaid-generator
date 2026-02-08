@@ -1,7 +1,9 @@
 from pathlib import Path
 import sys
+import html
 
 import streamlit as st
+import streamlit.components.v1 as components
 from streamlit_flow import streamlit_flow
 from streamlit_flow.elements import StreamlitFlowEdge, StreamlitFlowNode
 from streamlit_flow.state import StreamlitFlowState
@@ -124,6 +126,42 @@ def render_impact_summary(impact: dict) -> None:
     c1.metric("Added Nodes", len(impact.get("added_node_ids", [])))
     c2.metric("Changed Nodes", len(impact.get("changed_node_ids", [])))
     c3.metric("Added/Changed Edges", len(impact.get("added_edge_ids", [])) + len(impact.get("changed_edge_ids", [])))
+
+
+def render_mermaid_preview(mermaid_code: str, height: int = 520) -> None:
+    escaped = html.escape(mermaid_code or "")
+    mermaid_html = f"""
+<div style="padding: 8px;">
+  <pre class="mermaid">{escaped}</pre>
+  <div id="render_error" style="color:#b91c1c;font-family:monospace;"></div>
+</div>
+<script>
+  function renderMermaid() {{
+    try {{
+      mermaid.initialize({{ startOnLoad: false, securityLevel: "loose" }});
+      const nodes = document.querySelectorAll(".mermaid");
+      mermaid.run({{ nodes }}).catch((err) => {{
+        document.getElementById("render_error").textContent = "Mermaid render error: " + err;
+      }});
+    }} catch (err) {{
+      document.getElementById("render_error").textContent = "Mermaid init error: " + err;
+    }}
+  }}
+
+  if (window.mermaid) {{
+    renderMermaid();
+  }} else {{
+    const script = document.createElement("script");
+    script.src = "https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js";
+    script.onload = renderMermaid;
+    script.onerror = function() {{
+      document.getElementById("render_error").textContent = "Failed to load Mermaid runtime.";
+    }};
+    document.head.appendChild(script);
+  }}
+</script>
+"""
+    components.html(mermaid_html, height=height, scrolling=True)
 
 
 st.set_page_config(layout="wide")
@@ -250,8 +288,10 @@ else:
 
     col1, col2 = st.columns(2)
     with col1:
-        st.markdown("### Mermaid Export")
-        st.code(st.session_state.mermaid_code, language="mermaid")
+        st.markdown("### Mermaid Preview")
+        render_mermaid_preview(st.session_state.mermaid_code, height=540)
     with col2:
+        st.markdown("### Mermaid Code")
+        st.code(st.session_state.mermaid_code, language="mermaid")
         st.markdown("### Notes")
-        st.caption("This mode focuses on code templates. Flowchart GUI editing is available in Flowchart mode.")
+        st.caption("This mode uses Mermaid rendering preview. Flowchart GUI editing is available in Flowchart mode.")

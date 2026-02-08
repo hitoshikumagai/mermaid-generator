@@ -53,8 +53,10 @@ def calculate_layout_positions(
             level_counts[level] = count + 1
         return positions
     except nx.NetworkXUnfeasible:
-        positions = nx.spring_layout(graph, k=0.6, iterations=60, seed=42)
-        return {key: (float(value[0]), float(value[1])) for key, value in positions.items()}
+        # Cyclic graphs use spring layout first, then normalize and separate nodes to avoid overlap.
+        raw_positions = nx.spring_layout(graph, k=0.9, iterations=120, seed=42)
+        ordered_node_ids = [node["id"] for node in nodes_data]
+        return _normalize_and_separate_positions(raw_positions, ordered_node_ids)
 
 
 def export_to_mermaid(nodes_data: List[NodeData], edges_data: List[EdgeData]) -> str:
@@ -69,3 +71,48 @@ def export_to_mermaid(nodes_data: List[NodeData], edges_data: List[EdgeData]) ->
         else:
             lines.append(f'    {edge["source"]} --> {edge["target"]};')
     return "\n".join(lines) + "\n"
+
+
+def _normalize_and_separate_positions(
+    raw_positions: Dict[str, Tuple[float, float]], ordered_node_ids: List[str]
+) -> PositionMap:
+    xs = [float(raw_positions[node_id][0]) for node_id in ordered_node_ids if node_id in raw_positions]
+    ys = [float(raw_positions[node_id][1]) for node_id in ordered_node_ids if node_id in raw_positions]
+    if not xs or not ys:
+        return {node_id: (0.0, 0.0) for node_id in ordered_node_ids}
+
+    min_x, max_x = min(xs), max(xs)
+    min_y, max_y = min(ys), max(ys)
+    span_x = max(max_x - min_x, 1e-6)
+    span_y = max(max_y - min_y, 1e-6)
+
+    # Scale to pixel-like coordinates first.
+    scaled: PositionMap = {}
+    for node_id in ordered_node_ids:
+        if node_id not in raw_positions:
+            scaled[node_id] = (0.0, 0.0)
+            continue
+        raw_x, raw_y = raw_positions[node_id]
+        norm_x = (float(raw_x) - min_x) / span_x
+        norm_y = (float(raw_y) - min_y) / span_y
+        scaled[node_id] = (norm_x * 800.0, norm_y * 600.0)
+
+    # Then enforce minimum spacing between node boxes.
+    min_dx = 180.0
+    min_dy = 120.0
+    positions: PositionMap = {}
+    for node_id in ordered_node_ids:
+        base_x, base_y = scaled[node_id]
+        x, y = base_x, base_y
+        guard = 0
+        while any(abs(x - ox) < min_dx and abs(y - oy) < min_dy for ox, oy in positions.values()):
+            x += min_dx
+            guard += 1
+            if guard % 6 == 0:
+                x = base_x
+                y += min_dy
+            if guard > 60:
+                break
+        positions[node_id] = (float(x), float(y))
+
+    return positions
