@@ -39,8 +39,8 @@ def get_orchestrator() -> FlowchartOrchestrator:
 
 
 def to_flow_state(nodes_data: list, edges_data: list, positions: dict) -> StreamlitFlowState:
-    node_specs = to_flow_node_specs(nodes_data, positions)
-    edge_specs = to_flow_edge_specs(edges_data)
+    node_specs = to_flow_node_specs(nodes_data, positions, edges_data)
+    edge_specs = to_flow_edge_specs(edges_data, positions)
     flow_nodes = [StreamlitFlowNode(**spec) for spec in node_specs]
     flow_edges = [StreamlitFlowEdge(**spec) for spec in edge_specs]
     return StreamlitFlowState(nodes=flow_nodes, edges=flow_edges)
