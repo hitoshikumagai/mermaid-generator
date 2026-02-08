@@ -5,6 +5,7 @@ pytest.importorskip("networkx")
 from src.mermaid_generator.graph_logic import (
     build_mock_graph,
     calculate_layout_positions,
+    count_edge_crossings,
     export_to_mermaid,
 )
 
@@ -53,3 +54,41 @@ def test_export_to_mermaid_handles_labeled_and_unlabeled_edges():
     assert 'n1["Start"]' in mermaid
     assert "n1 -->|OK| n2;" in mermaid
     assert "n2 --> n1;" in mermaid
+
+
+def test_edge_aware_layout_reduces_crossing_for_bipartite_case():
+    nodes = [
+        {"id": "a", "label": "A", "type": "input"},
+        {"id": "b", "label": "B", "type": "input"},
+        {"id": "c", "label": "C", "type": "output"},
+        {"id": "d", "label": "D", "type": "output"},
+    ]
+    edges = [
+        {"id": "e1", "source": "a", "target": "d", "label": ""},
+        {"id": "e2", "source": "b", "target": "c", "label": ""},
+    ]
+
+    positions = calculate_layout_positions(nodes, edges)
+    crossings = count_edge_crossings(edges, positions)
+
+    assert crossings == 0
+
+
+def test_cycle_layout_spreads_positions_without_collapse():
+    nodes = [
+        {"id": "a", "label": "A", "type": "default"},
+        {"id": "b", "label": "B", "type": "default"},
+        {"id": "c", "label": "C", "type": "default"},
+        {"id": "d", "label": "D", "type": "default"},
+    ]
+    edges = [
+        {"id": "e1", "source": "a", "target": "b", "label": ""},
+        {"id": "e2", "source": "b", "target": "c", "label": ""},
+        {"id": "e3", "source": "c", "target": "d", "label": ""},
+        {"id": "e4", "source": "d", "target": "a", "label": ""},
+    ]
+
+    positions = calculate_layout_positions(nodes, edges)
+    unique_positions = {(round(x, 3), round(y, 3)) for x, y in positions.values()}
+
+    assert len(unique_positions) == len(nodes)

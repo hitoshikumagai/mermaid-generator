@@ -7,6 +7,11 @@ EdgeData = Dict[str, str]
 GraphData = Dict[str, List[Dict[str, str]]]
 PositionMap = Dict[str, Tuple[float, float]]
 
+LAYER_X_GAP = 240.0
+LAYER_Y_GAP = 170.0
+PADDING_X = 120.0
+PADDING_Y = 80.0
+
 
 def build_mock_graph(topic: str) -> GraphData:
     return {
@@ -30,33 +35,20 @@ def calculate_layout_positions(
     nodes_data: List[NodeData], edges_data: List[EdgeData]
 ) -> PositionMap:
     graph = nx.DiGraph()
-    for node in nodes_data:
-        graph.add_node(node["id"])
+    ordered_node_ids = [node["id"] for node in nodes_data]
+
+    for node_id in ordered_node_ids:
+        graph.add_node(node_id)
     for edge in edges_data:
-        graph.add_edge(edge["source"], edge["target"])
+        source = edge["source"]
+        target = edge["target"]
+        if source in graph and target in graph:
+            graph.add_edge(source, target)
 
-    try:
-        levels: Dict[str, int] = {}
-        for node_id in nx.topological_sort(graph):
-            level = 0
-            for pred in graph.predecessors(node_id):
-                level = max(level, levels.get(pred, 0) + 1)
-            levels[node_id] = level
+    if not ordered_node_ids:
+        return {}
 
-        positions: PositionMap = {}
-        level_counts: Dict[int, int] = {}
-        for node in nodes_data:
-            node_id = node["id"]
-            level = levels.get(node_id, 0)
-            count = level_counts.get(level, 0)
-            positions[node_id] = (count * 200.0, level * 150.0)
-            level_counts[level] = count + 1
-        return positions
-    except nx.NetworkXUnfeasible:
-        # Cyclic graphs use spring layout first, then normalize and separate nodes to avoid overlap.
-        raw_positions = nx.spring_layout(graph, k=0.9, iterations=120, seed=42)
-        ordered_node_ids = [node["id"] for node in nodes_data]
-        return _normalize_and_separate_positions(raw_positions, ordered_node_ids)
+    return _edge_aware_layered_layout(graph, ordered_node_ids)
 
 
 def export_to_mermaid(nodes_data: List[NodeData], edges_data: List[EdgeData]) -> str:
@@ -73,46 +65,200 @@ def export_to_mermaid(nodes_data: List[NodeData], edges_data: List[EdgeData]) ->
     return "\n".join(lines) + "\n"
 
 
-def _normalize_and_separate_positions(
-    raw_positions: Dict[str, Tuple[float, float]], ordered_node_ids: List[str]
-) -> PositionMap:
-    xs = [float(raw_positions[node_id][0]) for node_id in ordered_node_ids if node_id in raw_positions]
-    ys = [float(raw_positions[node_id][1]) for node_id in ordered_node_ids if node_id in raw_positions]
-    if not xs or not ys:
+def count_edge_crossings(edges_data: List[EdgeData], positions: PositionMap) -> int:
+    segments = []
+    for edge in edges_data:
+        source = edge["source"]
+        target = edge["target"]
+        if source in positions and target in positions:
+            segments.append((edge["id"], source, target, positions[source], positions[target]))
+
+    crossings = 0
+    for i in range(len(segments)):
+        _, s1, t1, p1, p2 = segments[i]
+        for j in range(i + 1, len(segments)):
+            _, s2, t2, q1, q2 = segments[j]
+
+            # Shared endpoint is not considered a crossing.
+            if len({s1, t1, s2, t2}) < 4:
+                continue
+
+            if _segments_intersect(p1, p2, q1, q2):
+                crossings += 1
+
+    return crossings
+
+
+def _edge_aware_layered_layout(graph: nx.DiGraph, ordered_node_ids: List[str]) -> PositionMap:
+    dag = _make_acyclic(graph, ordered_node_ids)
+    levels = _assign_levels(dag, ordered_node_ids)
+    layers = _build_layers(levels, ordered_node_ids)
+
+    if not layers:
         return {node_id: (0.0, 0.0) for node_id in ordered_node_ids}
 
-    min_x, max_x = min(xs), max(xs)
-    min_y, max_y = min(ys), max(ys)
-    span_x = max(max_x - min_x, 1e-6)
-    span_y = max(max_y - min_y, 1e-6)
+    layers = _reduce_crossings(dag, layers, sweeps=8)
 
-    # Scale to pixel-like coordinates first.
-    scaled: PositionMap = {}
-    for node_id in ordered_node_ids:
-        if node_id not in raw_positions:
-            scaled[node_id] = (0.0, 0.0)
-            continue
-        raw_x, raw_y = raw_positions[node_id]
-        norm_x = (float(raw_x) - min_x) / span_x
-        norm_y = (float(raw_y) - min_y) / span_y
-        scaled[node_id] = (norm_x * 800.0, norm_y * 600.0)
-
-    # Then enforce minimum spacing between node boxes.
-    min_dx = 180.0
-    min_dy = 120.0
     positions: PositionMap = {}
-    for node_id in ordered_node_ids:
-        base_x, base_y = scaled[node_id]
-        x, y = base_x, base_y
-        guard = 0
-        while any(abs(x - ox) < min_dx and abs(y - oy) < min_dy for ox, oy in positions.values()):
-            x += min_dx
-            guard += 1
-            if guard % 6 == 0:
-                x = base_x
-                y += min_dy
-            if guard > 60:
-                break
-        positions[node_id] = (float(x), float(y))
+    for level_idx, layer in enumerate(layers):
+        start_x = -((len(layer) - 1) * LAYER_X_GAP) / 2.0
+        y = level_idx * LAYER_Y_GAP
+        for index, node_id in enumerate(layer):
+            positions[node_id] = (start_x + index * LAYER_X_GAP, y)
 
-    return positions
+    return _shift_positions_to_positive(positions)
+
+
+def _make_acyclic(graph: nx.DiGraph, ordered_node_ids: List[str]) -> nx.DiGraph:
+    order = {node_id: idx for idx, node_id in enumerate(ordered_node_ids)}
+    dag = graph.copy()
+
+    while True:
+        try:
+            list(nx.topological_sort(dag))
+            return dag
+        except nx.NetworkXUnfeasible:
+            cycle = next(nx.simple_cycles(dag), None)
+            if not cycle:
+                return dag
+
+            cycle_edges = []
+            for idx in range(len(cycle)):
+                source = cycle[idx]
+                target = cycle[(idx + 1) % len(cycle)]
+                if dag.has_edge(source, target):
+                    cycle_edges.append((source, target))
+
+            if not cycle_edges:
+                return dag
+
+            # Remove the most "backward" edge in original order to keep forward flow.
+            edge_to_remove = max(
+                cycle_edges,
+                key=lambda edge: (
+                    order.get(edge[0], 0) - order.get(edge[1], 0),
+                    order.get(edge[0], 0),
+                    -order.get(edge[1], 0),
+                ),
+            )
+            dag.remove_edge(*edge_to_remove)
+
+
+def _assign_levels(dag: nx.DiGraph, ordered_node_ids: List[str]) -> Dict[str, int]:
+    levels: Dict[str, int] = {node_id: 0 for node_id in ordered_node_ids}
+
+    try:
+        topo = list(nx.topological_sort(dag))
+    except nx.NetworkXUnfeasible:
+        topo = ordered_node_ids
+
+    for node_id in topo:
+        preds = list(dag.predecessors(node_id))
+        if preds:
+            levels[node_id] = max(levels[pred] + 1 for pred in preds)
+
+    return levels
+
+
+def _build_layers(levels: Dict[str, int], ordered_node_ids: List[str]) -> List[List[str]]:
+    layer_map: Dict[int, List[str]] = {}
+    for node_id in ordered_node_ids:
+        level = levels.get(node_id, 0)
+        layer_map.setdefault(level, []).append(node_id)
+
+    return [layer_map[level] for level in sorted(layer_map.keys())]
+
+
+def _reduce_crossings(dag: nx.DiGraph, layers: List[List[str]], sweeps: int = 6) -> List[List[str]]:
+    if len(layers) <= 1:
+        return layers
+
+    arranged = [list(layer) for layer in layers]
+
+    for _ in range(sweeps):
+        # Downward sweep: order each layer by predecessor barycenter.
+        for layer_idx in range(1, len(arranged)):
+            arranged[layer_idx] = _order_layer_by_reference(
+                arranged[layer_idx],
+                arranged[layer_idx - 1],
+                lambda node_id: [pred for pred in dag.predecessors(node_id)],
+            )
+
+        # Upward sweep: order each layer by successor barycenter.
+        for layer_idx in range(len(arranged) - 2, -1, -1):
+            arranged[layer_idx] = _order_layer_by_reference(
+                arranged[layer_idx],
+                arranged[layer_idx + 1],
+                lambda node_id: [succ for succ in dag.successors(node_id)],
+            )
+
+    return arranged
+
+
+def _order_layer_by_reference(
+    target_layer: List[str],
+    reference_layer: List[str],
+    neighbor_getter,
+) -> List[str]:
+    ref_index = {node_id: idx for idx, node_id in enumerate(reference_layer)}
+    current_index = {node_id: idx for idx, node_id in enumerate(target_layer)}
+
+    def key(node_id: str) -> Tuple[float, int]:
+        neighbors = [n for n in neighbor_getter(node_id) if n in ref_index]
+        if neighbors:
+            barycenter = sum(ref_index[n] for n in neighbors) / float(len(neighbors))
+        else:
+            barycenter = float(current_index[node_id])
+        return barycenter, current_index[node_id]
+
+    return sorted(target_layer, key=key)
+
+
+def _shift_positions_to_positive(positions: PositionMap) -> PositionMap:
+    if not positions:
+        return positions
+
+    min_x = min(pos[0] for pos in positions.values())
+    min_y = min(pos[1] for pos in positions.values())
+
+    shift_x = -min_x + PADDING_X if min_x < PADDING_X else 0.0
+    shift_y = -min_y + PADDING_Y if min_y < PADDING_Y else 0.0
+
+    return {
+        node_id: (float(x + shift_x), float(y + shift_y))
+        for node_id, (x, y) in positions.items()
+    }
+
+
+def _segments_intersect(
+    p1: Tuple[float, float], p2: Tuple[float, float], q1: Tuple[float, float], q2: Tuple[float, float]
+) -> bool:
+    o1 = _orientation(p1, p2, q1)
+    o2 = _orientation(p1, p2, q2)
+    o3 = _orientation(q1, q2, p1)
+    o4 = _orientation(q1, q2, p2)
+
+    if o1 == 0 and _on_segment(p1, q1, p2):
+        return True
+    if o2 == 0 and _on_segment(p1, q2, p2):
+        return True
+    if o3 == 0 and _on_segment(q1, p1, q2):
+        return True
+    if o4 == 0 and _on_segment(q1, p2, q2):
+        return True
+
+    return (o1 > 0) != (o2 > 0) and (o3 > 0) != (o4 > 0)
+
+
+def _orientation(a: Tuple[float, float], b: Tuple[float, float], c: Tuple[float, float]) -> int:
+    value = (b[1] - a[1]) * (c[0] - b[0]) - (b[0] - a[0]) * (c[1] - b[1])
+    if abs(value) < 1e-9:
+        return 0
+    return 1 if value > 0 else -1
+
+
+def _on_segment(a: Tuple[float, float], b: Tuple[float, float], c: Tuple[float, float]) -> bool:
+    return (
+        min(a[0], c[0]) - 1e-9 <= b[0] <= max(a[0], c[0]) + 1e-9
+        and min(a[1], c[1]) - 1e-9 <= b[1] <= max(a[1], c[1]) + 1e-9
+    )
