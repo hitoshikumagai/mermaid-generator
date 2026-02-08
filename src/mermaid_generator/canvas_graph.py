@@ -255,14 +255,25 @@ def _parse_gantt(code: str) -> GraphData:
         if ":" not in line:
             continue
         label, spec = [part.strip() for part in line.split(":", 1)]
-        node_id, dependency = _parse_gantt_spec(spec, label)
+        node_id, metadata = _parse_gantt_spec(spec, label)
+        dependency = metadata.get("dependency", "")
         if node_id not in node_ids:
             node_ids.add(node_id)
-            nodes.append({"id": node_id, "label": label or node_id, "type": "default"})
+            node = {"id": node_id, "label": label or node_id, "type": "default"}
+            if metadata:
+                node["metadata"] = metadata
+            nodes.append(node)
         if dependency:
             if dependency not in node_ids:
                 node_ids.add(dependency)
-                nodes.append({"id": dependency, "label": dependency, "type": "default"})
+                nodes.append(
+                    {
+                        "id": dependency,
+                        "label": dependency,
+                        "type": "default",
+                        "metadata": {"task_id": dependency},
+                    }
+                )
             edges.append(
                 {
                     "id": f"e{len(edges) + 1}",
@@ -345,17 +356,45 @@ def _gantt_to_mermaid(nodes: List[NodeData], edges: List[EdgeData]) -> str:
 
     has_start_task = False
     for index, node in enumerate(nodes):
-        node_id = _safe_id(node["id"])
+        metadata = node.get("metadata")
+        meta = metadata if isinstance(metadata, dict) else {}
+
+        node_id = _safe_id(str(meta.get("task_id", "") or node["id"]))
         label = node.get("label", node_id) or node_id
-        dependency = dependency_by_target.get(node_id, "")
+
+        dependency = _safe_id(str(meta.get("dependency", "") or dependency_by_target.get(node_id, "")))
+        start = str(meta.get("start", "") or "").strip()
+        end = str(meta.get("end", "") or "").strip()
+        duration = str(meta.get("duration", "") or "").strip()
+        raw_flags = str(meta.get("flags", "") or "")
+        flags = [part.strip().lower() for part in raw_flags.split(",") if part.strip()]
+
+        tokens = []
+        for flag in flags:
+            if flag in {"active", "done", "crit", "milestone"}:
+                tokens.append(flag)
+        tokens.append(node_id)
         if dependency:
-            lines.append(f"    {label} :{node_id}, after {dependency}, 3d")
+            tokens.append(f"after {dependency}")
+
+        if start and end:
+            tokens.extend([start, end])
+        elif start:
+            tokens.extend([start, duration or "3d"])
+        elif end and duration:
+            tokens.extend([end, duration])
+        elif duration:
+            tokens.append(duration)
+        elif dependency:
+            tokens.append("3d")
         elif not has_start_task:
-            lines.append(f"    {label} :{node_id}, 2026-02-10, 3d")
+            tokens.extend(["2026-02-10", "3d"])
             has_start_task = True
         else:
-            previous = _safe_id(nodes[index - 1]["id"])
-            lines.append(f"    {label} :{node_id}, after {previous}, 3d")
+            previous = _safe_id(str(nodes[index - 1].get("id", "")))
+            tokens.extend([f"after {previous}", "3d"])
+
+        lines.append(f"    {label} :{', '.join(tokens)}")
     return "\n".join(lines) + "\n"
 
 
@@ -405,13 +444,37 @@ def _state_symbol(node_id: str) -> str:
     return node_id
 
 
-def _parse_gantt_spec(spec: str, label: str) -> Tuple[str, str]:
+def _parse_gantt_spec(spec: str, label: str) -> Tuple[str, Dict[str, str]]:
     tokens = [token.strip() for token in spec.split(",") if token.strip()]
     node_id = ""
     dependency = ""
+    start = ""
+    end = ""
+    duration = ""
+    flags: List[str] = []
+    known_flags = {"active", "done", "crit", "milestone"}
 
-    if tokens and re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", tokens[0]):
-        node_id = tokens[0]
+    for token in tokens:
+        lowered = token.lower()
+        if lowered in known_flags:
+            if lowered not in flags:
+                flags.append(lowered)
+            continue
+        if lowered.startswith("after "):
+            continue
+        if re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", token) and not node_id:
+            node_id = token
+            continue
+        if re.match(r"^\d{4}-\d{2}-\d{2}$", token):
+            if not start:
+                start = token
+            elif not end:
+                end = token
+            continue
+        if re.match(r"^\d+[smhdwMy]$", token):
+            duration = token
+            continue
+
     if not node_id:
         node_id = _safe_id(label) or f"task_{abs(hash(spec)) % 10000}"
 
@@ -419,7 +482,19 @@ def _parse_gantt_spec(spec: str, label: str) -> Tuple[str, str]:
     if dep_match:
         dependency = dep_match.group(1)
 
-    return node_id, dependency
+    metadata: Dict[str, str] = {"task_id": node_id}
+    if dependency:
+        metadata["dependency"] = dependency
+    if start:
+        metadata["start"] = start
+    if end:
+        metadata["end"] = end
+    if duration:
+        metadata["duration"] = duration
+    if flags:
+        metadata["flags"] = ", ".join(flags)
+
+    return node_id, metadata
 
 
 def _split_sequence_edge_label(label: str) -> Tuple[str, str]:

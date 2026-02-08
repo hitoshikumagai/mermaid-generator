@@ -649,7 +649,7 @@ def run_mermaid_agent_turn(diagram_type: str, user_message: str) -> None:
 
 def render_property_panel(diagram_type: str, graph_data: dict) -> dict:
     st.markdown("### Properties")
-    if diagram_type not in {"Class", "ER", "State", "Sequence"}:
+    if diagram_type not in {"Class", "ER", "State", "Sequence", "Gantt"}:
         st.caption("Type-specific property panel will be expanded in a follow-up issue.")
         return graph_data
 
@@ -666,7 +666,12 @@ def render_property_panel(diagram_type: str, graph_data: dict) -> dict:
         key=f"prop_node_{diagram_type.lower()}",
     )
     selected_node = next(node for node in nodes if node["id"] == selected_node_id)
-    node_props = parse_node_properties(diagram_type, selected_node["id"], selected_node.get("label", ""))
+    node_props = parse_node_properties(
+        diagram_type,
+        selected_node["id"],
+        selected_node.get("label", ""),
+        selected_node.get("metadata"),
+    )
     updated_graph = graph_data
 
     if diagram_type == "Class":
@@ -760,6 +765,58 @@ def render_property_panel(diagram_type: str, graph_data: dict) -> dict:
         if st.button("Apply Node Properties", key=f"apply_node_props_{diagram_type}_{selected_node_id}"):
             updated_graph = apply_node_properties(
                 diagram_type, updated_graph, selected_node_id, {"alias": alias}
+            )
+
+    if diagram_type == "Gantt":
+        task_name = st.text_input(
+            "Task Name",
+            value=node_props.get("name", ""),
+            key=f"gantt_name_{diagram_type}_{selected_node_id}",
+        )
+        task_id = st.text_input(
+            "Task ID",
+            value=node_props.get("task_id", selected_node_id),
+            key=f"gantt_task_id_{diagram_type}_{selected_node_id}",
+        )
+        dependency = st.text_input(
+            "Dependency (after task_id)",
+            value=node_props.get("dependency", ""),
+            key=f"gantt_dependency_{diagram_type}_{selected_node_id}",
+        )
+        start = st.text_input(
+            "Start Date (YYYY-MM-DD)",
+            value=node_props.get("start", ""),
+            key=f"gantt_start_{diagram_type}_{selected_node_id}",
+        )
+        end = st.text_input(
+            "End Date (YYYY-MM-DD)",
+            value=node_props.get("end", ""),
+            key=f"gantt_end_{diagram_type}_{selected_node_id}",
+        )
+        duration = st.text_input(
+            "Duration (e.g. 3d)",
+            value=node_props.get("duration", ""),
+            key=f"gantt_duration_{diagram_type}_{selected_node_id}",
+        )
+        flags = st.text_input(
+            "Flags (comma separated: active, done, crit, milestone)",
+            value=node_props.get("flags", ""),
+            key=f"gantt_flags_{diagram_type}_{selected_node_id}",
+        )
+        if st.button("Apply Node Properties", key=f"apply_node_props_{diagram_type}_{selected_node_id}"):
+            updated_graph = apply_node_properties(
+                diagram_type,
+                updated_graph,
+                selected_node_id,
+                {
+                    "name": task_name,
+                    "task_id": task_id,
+                    "dependency": dependency,
+                    "start": start,
+                    "end": end,
+                    "duration": duration,
+                    "flags": flags,
+                },
             )
 
     if edges:

@@ -86,3 +86,42 @@ def test_er_node_properties_include_pk_fk():
     assert "FK:user_id" in node["label"]
     parsed = parse_node_properties("ER", node["id"], node["label"])
     assert parsed["primary_key"] == "id"
+
+
+def test_gantt_node_properties_update_metadata_and_dependency_edge():
+    graph = {
+        "nodes": [
+            {"id": "a1", "label": "Scope Freeze", "type": "default"},
+            {"id": "b1", "label": "Implementation", "type": "default"},
+        ],
+        "edges": [],
+    }
+    updated = apply_node_properties(
+        "Gantt",
+        graph,
+        node_id="a1",
+        props={
+            "name": "Planning",
+            "task_id": "plan_1",
+            "dependency": "b1",
+            "start": "2026-02-10",
+            "duration": "3d",
+            "flags": "crit, done",
+        },
+    )
+
+    node = next(n for n in updated["nodes"] if n["id"] == "plan_1")
+    assert node["label"] == "Planning"
+    assert node["metadata"]["task_id"] == "plan_1"
+    assert node["metadata"]["dependency"] == "b1"
+    assert node["metadata"]["start"] == "2026-02-10"
+    assert node["metadata"]["duration"] == "3d"
+    assert node["metadata"]["flags"] == "crit, done"
+
+    edge = next(e for e in updated["edges"] if e["target"] == "plan_1")
+    assert edge["source"] == "b1"
+    assert edge["label"] == "after"
+
+    parsed = parse_node_properties("Gantt", node["id"], node["label"], node.get("metadata"))
+    assert parsed["task_id"] == "plan_1"
+    assert parsed["dependency"] == "b1"

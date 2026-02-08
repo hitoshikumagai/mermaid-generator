@@ -17,11 +17,15 @@ def to_flow_node_specs(
     for node in nodes_data:
         node_id = node["id"]
         x, y = positions.get(node["id"], (0.0, 0.0))
+        data = {"content": node.get("label", "")}
+        metadata = node.get("metadata")
+        if isinstance(metadata, Mapping):
+            data["metadata"] = dict(metadata)
         specs.append(
             {
                 "id": node_id,
                 "pos": (float(x), float(y)),
-                "data": {"content": node.get("label", "")},
+                "data": data,
                 "node_type": node.get("type", "default"),
                 "source_position": source_positions.get(node_id, "bottom"),
                 "target_position": target_positions.get(node_id, "top"),
@@ -77,13 +81,16 @@ def flow_items_to_graph_data(
         elif raw_data is not None:
             label = str(raw_data)
 
-        nodes.append(
-            {
-                "id": str(_get_item_value(node, "id", "")),
-                "label": label,
-                "type": str(_get_item_value(node, "node_type", "default")),
-            }
-        )
+        node_entry = {
+            "id": str(_get_item_value(node, "id", "")),
+            "label": label,
+            "type": str(_get_item_value(node, "node_type", "default")),
+        }
+        if isinstance(raw_data, Mapping):
+            metadata = raw_data.get("metadata")
+            if isinstance(metadata, Mapping):
+                node_entry["metadata"] = dict(metadata)
+        nodes.append(node_entry)
 
     edges: List[EdgeData] = []
     for edge in flow_edges:

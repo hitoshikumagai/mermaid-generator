@@ -97,3 +97,19 @@ def test_er_roundtrip_preserves_cardinality_marker():
     code = graph_to_mermaid("ER", graph)
 
     assert "USER ||--|{ ORDER : places" in code
+
+
+def test_gantt_roundtrip_preserves_task_metadata_and_dependency():
+    source = (
+        "gantt\n"
+        "    title Release Plan\n"
+        "    dateFormat  YYYY-MM-DD\n"
+        "    section Build\n"
+        "    Design :crit, d1, 2026-02-10, 3d\n"
+        "    Implement :i1, after d1, 5d\n"
+    )
+    graph = parse_mermaid_to_graph("Gantt", source)
+    code = graph_to_mermaid("Gantt", graph)
+
+    assert "Design :crit, d1, 2026-02-10, 3d" in code
+    assert "Implement :i1, after d1, 5d" in code

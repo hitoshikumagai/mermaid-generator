@@ -102,3 +102,22 @@ def test_to_flow_edge_specs_marks_back_edges_as_step():
 
     assert specs_by_id["e1"]["edge_type"] == "smoothstep"
     assert specs_by_id["e2"]["edge_type"] == "step"
+
+
+def test_ui_mapper_preserves_node_metadata_roundtrip():
+    nodes = [
+        {
+            "id": "task1",
+            "label": "Planning",
+            "type": "default",
+            "metadata": {"task_id": "task1", "duration": "3d", "flags": "crit"},
+        }
+    ]
+    positions = {"task1": (0.0, 0.0)}
+    specs = to_flow_node_specs(nodes, positions)
+
+    restored_nodes, _ = flow_items_to_graph_data(specs, [])
+
+    assert restored_nodes[0]["id"] == "task1"
+    assert restored_nodes[0]["metadata"]["task_id"] == "task1"
+    assert restored_nodes[0]["metadata"]["duration"] == "3d"
