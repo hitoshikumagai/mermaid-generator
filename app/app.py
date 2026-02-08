@@ -47,6 +47,10 @@ from src.mermaid_generator.property_editor import (  # noqa: E402
     parse_node_properties,
     upsert_class_subclass_relation,
 )
+from src.mermaid_generator.diagram_management import (  # noqa: E402
+    ALLOWED_STATUS_TRANSITIONS,
+    DiagramRepository,
+)
 
 
 @st.cache_resource
@@ -57,6 +61,11 @@ def get_orchestrator() -> FlowchartOrchestrator:
 @st.cache_resource
 def get_mermaid_orchestrator() -> MermaidDiagramOrchestrator:
     return MermaidDiagramOrchestrator()
+
+
+@st.cache_resource
+def get_diagram_repository() -> DiagramRepository:
+    return DiagramRepository(ROOT_DIR / ".diagram_data")
 
 
 def to_flow_state(nodes_data: list, edges_data: list, positions: dict) -> StreamlitFlowState:
@@ -237,6 +246,161 @@ def get_canvas_graph(diagram_type: str) -> dict:
 
 def set_canvas_graph(diagram_type: str, graph_data: dict) -> None:
     st.session_state.canvas_graph_by_type[diagram_type] = graph_data
+
+
+def apply_managed_diagram(diagram: dict) -> None:
+    diagram_type = str(diagram.get("diagram_type", "") or "")
+    mermaid_code = str(diagram.get("mermaid_code", "") or "")
+    graph_data = diagram.get("graph_data")
+    if not isinstance(graph_data, dict):
+        graph_data = parse_mermaid_to_graph(diagram_type, mermaid_code)
+
+    if diagram_type == "Flowchart":
+        apply_graph_data(graph_data, f"Loaded candidate: {diagram.get('title', diagram.get('id', ''))}")
+    else:
+        set_canvas_graph(diagram_type, graph_data)
+        if mermaid_code.strip():
+            set_mermaid_code(diagram_type, mermaid_code, sync_editor=True)
+        else:
+            set_mermaid_code(diagram_type, graph_to_mermaid(diagram_type, graph_data), sync_editor=True)
+        st.session_state.mermaid_agent_state_by_type[diagram_type] = {
+            "phase": "loaded",
+            "source": "stored",
+            "message": f"Loaded candidate: {diagram.get('title', diagram.get('id', ''))}",
+        }
+
+
+def render_candidate_manager(diagram_type: str, mermaid_code: str, graph_data: dict) -> None:
+    repository = get_diagram_repository()
+    st.markdown("### Candidate Management")
+    st.caption("Create, review, and archive diagram candidates with decision history.")
+
+    include_archived = st.checkbox(
+        "Include archived",
+        value=False,
+        key=f"candidate_include_archived_{diagram_type.lower()}",
+    )
+    all_diagrams = repository.list_diagrams(include_archived=include_archived)
+    diagrams = [d for d in all_diagrams if str(d.get("diagram_type", "")) == diagram_type]
+    option_ids = [d["id"] for d in diagrams]
+
+    def format_candidate(candidate_id: str) -> str:
+        candidate = next((item for item in diagrams if item["id"] == candidate_id), None)
+        if not candidate:
+            return candidate_id
+        return f"{candidate['title']} [{candidate['status']}]"
+
+    if option_ids:
+        selected_id = st.selectbox(
+            "Saved candidates",
+            options=option_ids,
+            format_func=format_candidate,
+            key=f"candidate_select_{diagram_type.lower()}",
+            index=0,
+        )
+    else:
+        st.caption("No saved candidates for this diagram type.")
+        selected_id = ""
+
+    default_title = f"{diagram_type} Candidate"
+    title = st.text_input(
+        "New candidate title",
+        value=default_title,
+        key=f"candidate_title_{diagram_type.lower()}",
+    )
+    if st.button("Save New Candidate", key=f"candidate_save_new_{diagram_type.lower()}"):
+        created = repository.create_diagram(
+            title=title,
+            diagram_type=diagram_type,
+            mermaid_code=mermaid_code,
+            graph_data=graph_data,
+            actor="user",
+            tags=[diagram_type.lower()],
+        )
+        st.success(f"Saved: {created['title']}")
+        st.rerun()
+
+    if not selected_id:
+        return
+
+    selected_diagram = repository.get_diagram(selected_id)
+    if not selected_diagram:
+        st.warning("Selected candidate was not found.")
+        return
+
+    row_load, row_update = st.columns(2)
+    if row_load.button("Load Candidate", key=f"candidate_load_{diagram_type.lower()}"):
+        apply_managed_diagram(selected_diagram)
+        st.success(f"Loaded: {selected_diagram['title']}")
+        st.rerun()
+    if row_update.button("Save Update", key=f"candidate_save_update_{diagram_type.lower()}"):
+        repository.update_diagram_content(
+            diagram_id=selected_id,
+            mermaid_code=mermaid_code,
+            graph_data=graph_data,
+            actor="user",
+        )
+        st.success("Candidate updated.")
+        st.rerun()
+
+    current_status = str(selected_diagram.get("status", "active"))
+    next_statuses = sorted(ALLOWED_STATUS_TRANSITIONS.get(current_status, set()))
+    if next_statuses:
+        next_status = st.selectbox(
+            "Transition status",
+            options=next_statuses,
+            key=f"candidate_next_status_{diagram_type.lower()}",
+        )
+        status_reason = st.text_input(
+            "Status reason",
+            value="",
+            key=f"candidate_status_reason_{diagram_type.lower()}",
+        )
+        if st.button("Apply Status", key=f"candidate_apply_status_{diagram_type.lower()}"):
+            repository.set_status(
+                diagram_id=selected_id,
+                status=next_status,
+                actor="user",
+                reason=status_reason,
+            )
+            st.success(f"Status changed to {next_status}.")
+            st.rerun()
+
+    note_summary = st.text_input(
+        "Decision summary",
+        value="Review note",
+        key=f"candidate_note_summary_{diagram_type.lower()}",
+    )
+    note_markdown = st.text_area(
+        "Decision markdown",
+        value="",
+        height=120,
+        key=f"candidate_note_markdown_{diagram_type.lower()}",
+    )
+    if st.button("Add Decision Note", key=f"candidate_add_note_{diagram_type.lower()}"):
+        if not note_markdown.strip():
+            st.warning("Decision markdown is required.")
+        else:
+            repository.append_decision_event(
+                diagram_id=selected_id,
+                actor="user",
+                stage="review",
+                summary=note_summary,
+                markdown_comment=note_markdown,
+                tags=["review", diagram_type.lower()],
+            )
+            st.success("Decision note recorded.")
+            st.rerun()
+
+    events = repository.list_decision_events(selected_id)
+    vectors = repository.list_vector_records(selected_id)
+    st.caption(f"Decision events: {len(events)} / Vector records: {len(vectors)}")
+    for event in reversed(events[-5:]):
+        st.markdown(f"**{event.get('stage', '').upper()}** {event.get('summary', '')}")
+        st.caption(event.get("created_at", ""))
+        comment = str(event.get("markdown_comment", "")).strip()
+        if comment:
+            st.markdown(comment)
 
 
 def run_agent_turn(user_message: str) -> None:
@@ -678,6 +842,11 @@ if st.session_state.diagram_type == "Flowchart":
             st.json(st.session_state.impact, expanded=False)
         st.markdown("### Debug")
         st.json({"node_count": len(curr_state.nodes), "edge_count": len(curr_state.edges)}, expanded=False)
+        render_candidate_manager(
+            "Flowchart",
+            mermaid_text,
+            {"nodes": current_nodes, "edges": current_edges},
+        )
 
     if selected_mode == "Orchestration":
         st.caption("Set OPENAI_API_KEY to enable real LLM orchestration.")
@@ -735,6 +904,7 @@ else:
             updated_code = graph_to_mermaid(diagram_type, updated_graph)
             set_mermaid_code(diagram_type, updated_code)
             st.rerun()
+        render_candidate_manager(diagram_type, code, current_graph)
         if capabilities["chat"]:
             agent_state = st.session_state.mermaid_agent_state_by_type.get(
                 diagram_type, {"phase": "initial", "source": "fallback", "message": ""}
