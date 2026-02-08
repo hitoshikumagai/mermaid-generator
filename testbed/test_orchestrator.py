@@ -136,6 +136,25 @@ def test_fallback_second_turn_reports_impact():
     assert "impacted_node_ids" in turn.impact
 
 
+def test_flowchart_fallback_does_not_put_memory_block_in_label():
+    orchestrator = FlowchartOrchestrator(llm_client=DisabledClient())
+    turn = orchestrator.run_turn(
+        user_message=(
+            "メール処理を可視化したい。\n\n"
+            "Session Memory:\n"
+            "- template=EC Purchase Flow (id=ec_purchase, stage=bootstrap)\n"
+        ),
+        chat_history=[],
+        current_scope="",
+        current_graph=None,
+    )
+
+    assert turn.graph_data is not None
+    proc = next(node for node in turn.graph_data["nodes"] if node["id"] == "proc1")
+    assert "Session Memory" not in proc["label"]
+    assert "template=" not in proc["label"]
+
+
 def test_llm_second_turn_uses_update_path():
     orchestrator = FlowchartOrchestrator(llm_client=EnabledStubClient())
     current_graph = {

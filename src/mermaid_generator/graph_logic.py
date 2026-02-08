@@ -1,3 +1,4 @@
+import re
 from typing import Dict, List, Tuple
 
 import networkx as nx
@@ -14,10 +15,11 @@ PADDING_Y = 80.0
 
 
 def build_mock_graph(topic: str) -> GraphData:
+    cleaned_topic = _normalize_topic_label(topic)
     return {
         "nodes": [
             {"id": "start", "label": "Start", "type": "input"},
-            {"id": "proc1", "label": f"Research: {topic}", "type": "default"},
+            {"id": "proc1", "label": f"Research: {cleaned_topic}", "type": "default"},
             {"id": "decide", "label": "Decision", "type": "default"},
             {"id": "end_ok", "label": "Success", "type": "output"},
             {"id": "end_ng", "label": "Fail", "type": "output"},
@@ -292,3 +294,38 @@ def _on_segment(a: Tuple[float, float], b: Tuple[float, float], c: Tuple[float, 
         min(a[0], c[0]) - 1e-9 <= b[0] <= max(a[0], c[0]) + 1e-9
         and min(a[1], c[1]) - 1e-9 <= b[1] <= max(a[1], c[1]) + 1e-9
     )
+
+
+def _normalize_topic_label(topic: str, max_len: int = 72) -> str:
+    raw = (topic or "").strip()
+    if not raw:
+        return "workflow"
+
+    if "Session Memory:" in raw:
+        raw = raw.split("Session Memory:", 1)[0].strip()
+
+    candidates: List[str] = []
+    for line in raw.splitlines():
+        cleaned = line.strip()
+        if not cleaned:
+            continue
+        cleaned = re.sub(r"^#+\s*", "", cleaned)
+        cleaned = re.sub(r"^\d+[\).]\s*", "", cleaned)
+        cleaned = re.sub(r"^[-*]\s*", "", cleaned)
+        cleaned = re.sub(r"^>\s*", "", cleaned)
+        cleaned = re.sub(r"\*\*(.*?)\*\*", r"\1", cleaned)
+        cleaned = re.sub(r"`([^`]*)`", r"\1", cleaned)
+        cleaned = re.sub(r"\s+", " ", cleaned).strip()
+        if not cleaned:
+            continue
+        if cleaned.startswith("|") and cleaned.endswith("|"):
+            continue
+        if re.fullmatch(r"[-:| ]+", cleaned):
+            continue
+        fragments = [frag.strip() for frag in re.split(r"[。.!?]", cleaned) if frag.strip()]
+        candidates.extend(fragments or [cleaned])
+
+    chosen = candidates[0] if candidates else "workflow"
+    if len(chosen) > max_len:
+        chosen = f"{chosen[: max_len - 3].rstrip()}..."
+    return chosen

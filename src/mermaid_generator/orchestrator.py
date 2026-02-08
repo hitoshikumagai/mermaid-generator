@@ -331,6 +331,15 @@ class MermaidDiagramOrchestrator:
         current_code: str,
     ) -> MermaidTurn:
         observed = self.observe_agent.observe(user_message=user_message, current_code=current_code)
+        ok, reason = observed.validate()
+        if not ok:
+            return self._run_fallback_with_roles(
+                diagram_type=diagram_type,
+                user_message=user_message or "create default diagram",
+                chat_history=chat_history,
+                current_code=current_code,
+                reason=f"observe invalid: {reason}",
+            )
         has_code = observed.has_current_code
 
         if not self.llm_client.is_enabled():

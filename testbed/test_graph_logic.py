@@ -17,6 +17,21 @@ def test_build_mock_graph_contains_topic_label():
     assert len(graph["edges"]) == 4
 
 
+def test_build_mock_graph_strips_session_memory_and_markdown_noise():
+    graph = build_mock_graph(
+        "## Email workflow\n"
+        "| Action | Rule |\n"
+        "| --- | --- |\n"
+        "- Process inbox\n\n"
+        "Session Memory:\n"
+        "- template=EC Purchase Flow (id=ec_purchase, stage=bootstrap)\n"
+    )
+    proc = next(node for node in graph["nodes"] if node["id"] == "proc1")
+    assert "\n" not in proc["label"]
+    assert "Session Memory" not in proc["label"]
+    assert "template=" not in proc["label"]
+
+
 def test_calculate_layout_positions_is_hierarchical_for_dag():
     graph = build_mock_graph("x")
     positions = calculate_layout_positions(graph["nodes"], graph["edges"])
