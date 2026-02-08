@@ -11,6 +11,10 @@ This repository provides a Python-only flowchart generator with a GUI editor. Th
 5. Common Mermaid templates are selectable by default:
    - Flowchart templates (GUI editable)
    - Sequence/State/ER/Class/Gantt templates (code mode)
+6. Editor UX parity across all diagram types:
+   - shared editor surface
+   - edit, preview, export support
+   - optional orchestration chat mode
 
 The app lives under `app/` and business logic lives under `src/`.
 The `testbed/` directory is reserved for tests to support TDD.
@@ -58,6 +62,18 @@ pip install streamlit-flow-component==1.6.1
 - Layout: uses NetworkX to compute a simple hierarchical layout.
 - UI: Streamlit-Flow renders nodes/edges and supports drag-and-drop editing.
 - Export: UI state is converted to Mermaid syntax.
+- Editor policy: all types support `edit + preview + export` with consistent controls.
+
+## Editor UX Parity
+
+Every diagram type now uses a consistent Editor workflow.
+
+- Types: `Flowchart`, `Sequence`, `State`, `ER`, `Class`, `Gantt`
+- Shared controls: load template, edit, preview, export
+- Work modes: `Orchestration` or `Manual`
+- Type-specific behavior:
+  - `Flowchart`: node/edge canvas editing + Mermaid export
+  - non-flowchart types: Mermaid text editing + Mermaid render preview + export
 
 ## JSON Schema (LLM Output)
 

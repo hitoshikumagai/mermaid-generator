@@ -27,6 +27,10 @@ from src.mermaid_generator.templates import (  # noqa: E402
     list_flowchart_templates,
     list_mermaid_templates,
 )
+from src.mermaid_generator.editor_policy import (  # noqa: E402
+    get_editor_capabilities,
+    get_export_filename,
+)
 from src.mermaid_generator.ui_mapper import (  # noqa: E402
     flow_items_to_graph_data,
     to_flow_edge_specs,
@@ -364,6 +368,13 @@ if st.session_state.diagram_type == "Flowchart":
     with col1:
         st.markdown("### Mermaid Export")
         st.code(mermaid_text, language="mermaid")
+        st.download_button(
+            "Export Mermaid (.mmd)",
+            data=mermaid_text,
+            file_name=get_export_filename("Flowchart"),
+            mime="text/plain",
+            use_container_width=True,
+        )
     with col2:
         if selected_mode == "Orchestration":
             st.markdown("### Impact Summary")
@@ -378,7 +389,9 @@ if st.session_state.diagram_type == "Flowchart":
         st.caption("Set OPENAI_API_KEY to enable real LLM orchestration.")
 else:
     diagram_type = st.session_state.diagram_type
-    if selected_mode == "Orchestration":
+    capabilities = get_editor_capabilities(diagram_type, selected_mode)
+
+    if capabilities["chat"]:
         prompt = st.chat_input(f"{diagram_type} の変更指示を入力")
         if prompt:
             st.session_state.mermaid_chat_history_by_type[diagram_type].append(
@@ -391,37 +404,41 @@ else:
             with st.chat_message(message["role"]):
                 st.write(message["content"])
 
-        code = get_mermaid_code(diagram_type)
-        col1, col2 = st.columns(2)
-        with col1:
-            st.markdown("### Mermaid Preview")
-            render_mermaid_preview(code, height=540)
-        with col2:
+    st.subheader(f"{diagram_type} Editor")
+    st.caption("Shared editor surface: edit, preview, export.")
+    current_code = get_mermaid_code(diagram_type)
+    editor_key = mermaid_editor_key(diagram_type)
+    if st.session_state.get(editor_key, "") != current_code:
+        st.session_state[editor_key] = current_code
+    edited_code = st.text_area(
+        "Mermaid Code",
+        key=editor_key,
+        height=420,
+    )
+    if edited_code != current_code:
+        set_mermaid_code(diagram_type, edited_code)
+    code = get_mermaid_code(diagram_type)
+
+    col1, col2 = st.columns(2)
+    with col1:
+        st.markdown("### Mermaid Preview")
+        render_mermaid_preview(code, height=540)
+    with col2:
+        st.markdown("### Mermaid Export")
+        st.code(code, language="mermaid")
+        st.download_button(
+            "Export Mermaid (.mmd)",
+            data=code,
+            file_name=get_export_filename(diagram_type),
+            mime="text/plain",
+            use_container_width=True,
+        )
+        if capabilities["chat"]:
             agent_state = st.session_state.mermaid_agent_state_by_type.get(
                 diagram_type, {"phase": "initial", "source": "fallback", "message": ""}
             )
-            st.markdown("### Mermaid Code")
-            st.code(code, language="mermaid")
             st.markdown("### Change Summary")
             st.caption(agent_state.get("message", ""))
             st.markdown("### Source")
             st.caption(agent_state.get("source", "fallback"))
-        st.caption("Set OPENAI_API_KEY to enable real LLM orchestration.")
-    else:
-        st.subheader(f"{diagram_type} Mermaid Editor")
-        edited_code = st.text_area(
-            "Mermaid Code",
-            key=mermaid_editor_key(diagram_type),
-            height=520,
-        )
-        set_mermaid_code(diagram_type, edited_code)
-
-        col1, col2 = st.columns(2)
-        with col1:
-            st.markdown("### Mermaid Preview")
-            render_mermaid_preview(edited_code, height=540)
-        with col2:
-            st.markdown("### Mermaid Code")
-            st.code(edited_code, language="mermaid")
-            st.markdown("### Notes")
-            st.caption("Switch to Orchestration mode to update this diagram through chat.")
+            st.caption("Set OPENAI_API_KEY to enable real LLM orchestration.")
