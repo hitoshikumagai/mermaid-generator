@@ -1,0 +1,11 @@
+name: mermaid-generator
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - streamlit
+  - networkx
+  - pytest
+  - pip
+  - pip:
+      - streamlit-flow

@@ -1,0 +1,89 @@
+# Mermaid Generator (LLM + Python Layout + Streamlit-Flow)
+
+This repository provides a Python-only flowchart generator with a GUI editor. The core idea is:
+
+1. LLM generates logical structure only (nodes/edges as JSON, no coordinates).
+2. Python computes node coordinates using a layout engine (NetworkX).
+3. Streamlit-Flow renders the graph and allows manual adjustments.
+
+The app lives under `app/` and business logic lives under `src/`.
+The `testbed/` directory is reserved for tests to support TDD.
+
+## Quickstart (Conda)
+
+Create and activate environment:
+
+```bash
+conda env create -f environment.yml
+conda activate mermaid-generator
+```
+
+Run the app:
+
+```bash
+streamlit run app/app.py
+```
+
+Run tests:
+
+```bash
+pytest -q testbed
+```
+
+### Optional (manual install in existing conda env)
+
+```bash
+conda install -c conda-forge streamlit networkx
+pip install streamlit-flow
+```
+
+## Architecture
+
+- LLM: returns JSON with `nodes` and `edges`.
+- Layout: uses NetworkX to compute a simple hierarchical layout.
+- UI: Streamlit-Flow renders nodes/edges and supports drag-and-drop editing.
+- Export: UI state is converted to Mermaid syntax.
+
+## JSON Schema (LLM Output)
+
+```json
+{
+  "nodes": [
+    {"id": "string", "label": "string", "type": "input|default|output"}
+  ],
+  "edges": [
+    {"id": "string", "source": "node_id", "target": "node_id", "label": "string"}
+  ]
+}
+```
+
+## Mermaid Export Example
+
+```mermaid
+graph TD;
+    start["Start"];
+    process["Do work"];
+    end["Done"];
+    start --> process;
+    process --> end;
+```
+
+## Project Layout
+
+- `README.md`: project overview and usage
+- `ISSUE.md`: issue template
+- `environment.yml`: conda environment definition
+- `app/app.py`: Streamlit UI entrypoint
+- `src/mermaid_generator/graph_logic.py`: business logic
+- `src/mermaid_generator/ui_mapper.py`: UI conversion functions (testable)
+- `testbed/test_graph_logic.py`: tests for TDD workflow
+- `testbed/test_ui_mapper.py`: tests for UI conversion
+
+## Notes
+
+- If you plan to integrate a real LLM, enforce JSON-only output.
+- For more stable layouts, consider Graphviz if available.
+
+## License
+
+See `LICENSE`.
