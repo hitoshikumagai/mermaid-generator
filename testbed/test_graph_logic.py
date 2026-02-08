@@ -92,3 +92,25 @@ def test_cycle_layout_spreads_positions_without_collapse():
     unique_positions = {(round(x, 3), round(y, 3)) for x, y in positions.values()}
 
     assert len(unique_positions) == len(nodes)
+
+
+def test_feedback_loop_layout_aligns_singleton_lanes():
+    nodes = [
+        {"id": "start", "label": "Submit Request", "type": "input"},
+        {"id": "review", "label": "Manager Review", "type": "default"},
+        {"id": "approve", "label": "Approved", "type": "output"},
+        {"id": "reject", "label": "Rejected", "type": "output"},
+        {"id": "rework", "label": "Rework", "type": "default"},
+    ]
+    edges = [
+        {"id": "e1", "source": "start", "target": "review", "label": ""},
+        {"id": "e2", "source": "review", "target": "approve", "label": "Approve"},
+        {"id": "e3", "source": "review", "target": "reject", "label": "Reject"},
+        {"id": "e4", "source": "reject", "target": "rework", "label": "Fix"},
+        {"id": "e5", "source": "rework", "target": "review", "label": "Resubmit"},
+    ]
+
+    positions = calculate_layout_positions(nodes, edges)
+
+    assert abs(positions["start"][0] - positions["review"][0]) < 1e-6
+    assert abs(positions["reject"][0] - positions["rework"][0]) < 1e-6

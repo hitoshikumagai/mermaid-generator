@@ -106,6 +106,7 @@ def _edge_aware_layered_layout(graph: nx.DiGraph, ordered_node_ids: List[str]) -
         for index, node_id in enumerate(layer):
             positions[node_id] = (start_x + index * LAYER_X_GAP, y)
 
+    positions = _nudge_singleton_layers(dag, layers, positions)
     return _shift_positions_to_positive(positions)
 
 
@@ -228,6 +229,35 @@ def _shift_positions_to_positive(positions: PositionMap) -> PositionMap:
         node_id: (float(x + shift_x), float(y + shift_y))
         for node_id, (x, y) in positions.items()
     }
+
+
+def _nudge_singleton_layers(
+    dag: nx.DiGraph, layers: List[List[str]], positions: PositionMap
+) -> PositionMap:
+    adjusted = dict(positions)
+
+    for level_idx, layer in enumerate(layers):
+        if len(layer) != 1:
+            continue
+        node_id = layer[0]
+        preds = [pred for pred in dag.predecessors(node_id) if pred in adjusted]
+        succs = [succ for succ in dag.successors(node_id) if succ in adjusted]
+        anchors = preds + succs
+        if not anchors:
+            continue
+
+        # Keep singleton nodes near incident lanes to avoid tiny visual edge crossings.
+        anchor_x = sorted(adjusted[anchor][0] for anchor in anchors)
+        center_idx = len(anchor_x) // 2
+        if len(anchor_x) % 2 == 1:
+            target_x = anchor_x[center_idx]
+        else:
+            target_x = (anchor_x[center_idx - 1] + anchor_x[center_idx]) / 2.0
+
+        _, y = adjusted[node_id]
+        adjusted[node_id] = (target_x, y)
+
+    return adjusted
 
 
 def _segments_intersect(
