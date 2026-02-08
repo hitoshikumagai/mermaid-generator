@@ -1,5 +1,10 @@
 from src.mermaid_generator.graph_logic import build_mock_graph
-from src.mermaid_generator.orchestrator import FlowchartOrchestrator, compute_impact_range
+from src.mermaid_generator.orchestrator import (
+    FlowchartOrchestrator,
+    MermaidDiagramOrchestrator,
+    compute_impact_range,
+    sanitize_mermaid_code,
+)
 
 
 class DisabledClient:
@@ -38,6 +43,30 @@ class EnabledStubClient:
                 {"id": "end", "label": "End", "type": "output"},
             ],
             "edges": [{"id": "e1", "source": "start", "target": "end", "label": ""}],
+        }
+
+
+class MermaidEnabledStubClient:
+    def is_enabled(self) -> bool:
+        return True
+
+    def complete_json(self, system_prompt, user_prompt, temperature=0.2):
+        if "update Mermaid diagram code" in system_prompt:
+            return {
+                "assistant_message": "Updated sequence.",
+                "change_summary": "Added payment response path.",
+                "mermaid_code": (
+                    "sequenceDiagram\n"
+                    "    participant C as Client\n"
+                    "    participant A as API\n"
+                    "    C->>A: request\n"
+                    "    A-->>C: response\n"
+                ),
+            }
+        return {
+            "assistant_message": "Initial draft ready.",
+            "change_summary": "Created first diagram.",
+            "mermaid_code": "participant U as User\nU->>S: start",
         }
 
 
@@ -110,3 +139,40 @@ def test_llm_second_turn_uses_update_path():
     assert turn.source == "llm"
     assert turn.impact["phase"] == "update"
     assert "refund" in [n["id"] for n in turn.graph_data["nodes"]]
+
+
+def test_mermaid_fallback_initial_loads_template():
+    orchestrator = MermaidDiagramOrchestrator(llm_client=DisabledClient())
+    turn = orchestrator.run_turn(
+        diagram_type="Sequence",
+        user_message="create api sequence",
+        chat_history=[],
+        current_code="",
+    )
+
+    assert turn.source == "fallback"
+    assert turn.phase == "initial"
+    assert "sequenceDiagram" in turn.mermaid_code
+
+
+def test_mermaid_llm_update_uses_update_path():
+    orchestrator = MermaidDiagramOrchestrator(llm_client=MermaidEnabledStubClient())
+    turn = orchestrator.run_turn(
+        diagram_type="Sequence",
+        user_message="add response step",
+        chat_history=[{"role": "user", "content": "initial"}],
+        current_code="sequenceDiagram\n    participant C as Client\n",
+    )
+
+    assert turn.source == "llm"
+    assert turn.phase == "update"
+    assert "A-->>C: response" in turn.mermaid_code
+    assert "payment response path" in turn.change_summary
+
+
+def test_sanitize_mermaid_code_strips_fence_and_adds_header():
+    raw = "```mermaid\nparticipant U as User\nU->>S: start\n```"
+    code = sanitize_mermaid_code("Sequence", raw)
+
+    assert code.startswith("sequenceDiagram\n")
+    assert "```" not in code

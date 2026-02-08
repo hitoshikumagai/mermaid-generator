@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 from .graph_logic import GraphData, build_mock_graph
+from .templates import get_mermaid_template, list_mermaid_templates
 
 ChatMessage = Dict[str, str]
 
@@ -18,6 +19,15 @@ class AgentTurn:
     mode: str
     source: str
     impact: Dict[str, Any]
+
+
+@dataclass
+class MermaidTurn:
+    assistant_message: str
+    mermaid_code: str
+    source: str
+    phase: str
+    change_summary: str
 
 
 class OpenAIJSONClient:
@@ -299,6 +309,130 @@ class FlowchartOrchestrator:
         )
 
 
+class MermaidDiagramOrchestrator:
+    def __init__(self, llm_client: Optional[OpenAIJSONClient] = None) -> None:
+        self.llm_client = llm_client or OpenAIJSONClient()
+
+    def run_turn(
+        self,
+        diagram_type: str,
+        user_message: str,
+        chat_history: List[ChatMessage],
+        current_code: str,
+    ) -> MermaidTurn:
+        has_code = bool((current_code or "").strip())
+
+        if not self.llm_client.is_enabled():
+            if has_code:
+                return self._run_fallback_update(diagram_type, current_code)
+            return self._run_fallback_initial(diagram_type)
+
+        try:
+            if has_code:
+                return self._run_llm_update(diagram_type, user_message, chat_history, current_code)
+            return self._run_llm_initial(diagram_type, user_message, chat_history)
+        except Exception as exc:
+            if has_code:
+                fallback = self._run_fallback_update(diagram_type, current_code)
+            else:
+                fallback = self._run_fallback_initial(diagram_type)
+            fallback.assistant_message = f"LLM call failed, switched to fallback mode: {exc}"
+            fallback.source = "fallback"
+            return fallback
+
+    def _run_llm_initial(
+        self,
+        diagram_type: str,
+        user_message: str,
+        chat_history: List[ChatMessage],
+    ) -> MermaidTurn:
+        history_text = _format_history(chat_history[-8:])
+        system_prompt = (
+            "You are a Mermaid diagram assistant. "
+            "Return JSON only with keys: assistant_message, mermaid_code, change_summary.\n"
+            "mermaid_code must be valid Mermaid syntax for the requested diagram type."
+        )
+        user_prompt = (
+            f"Diagram type: {diagram_type}\n\n"
+            "Conversation:\n"
+            f"{history_text}\n\n"
+            "Latest user request:\n"
+            f"{user_message}\n\n"
+            "Rules:\n"
+            "- Output a complete, runnable Mermaid diagram.\n"
+            "- Keep it practical and under 24 lines.\n"
+            "- Preserve language from user request when possible.\n"
+        )
+        result = self.llm_client.complete_json(system_prompt, user_prompt, temperature=0.2)
+        code = sanitize_mermaid_code(diagram_type, str(result.get("mermaid_code", "")))
+        return MermaidTurn(
+            assistant_message=str(result.get("assistant_message", "Generated Mermaid draft.")).strip()
+            or "Generated Mermaid draft.",
+            mermaid_code=code,
+            source="llm",
+            phase="initial",
+            change_summary=str(result.get("change_summary", "Initial draft generated.")).strip()
+            or "Initial draft generated.",
+        )
+
+    def _run_llm_update(
+        self,
+        diagram_type: str,
+        user_message: str,
+        chat_history: List[ChatMessage],
+        current_code: str,
+    ) -> MermaidTurn:
+        history_text = _format_history(chat_history[-8:])
+        system_prompt = (
+            "You update Mermaid diagram code based on user requests. "
+            "Return JSON only with keys: assistant_message, mermaid_code, change_summary."
+        )
+        user_prompt = (
+            f"Diagram type: {diagram_type}\n\n"
+            "Current Mermaid code:\n"
+            f"{current_code}\n\n"
+            "Conversation:\n"
+            f"{history_text}\n\n"
+            "Latest user request:\n"
+            f"{user_message}\n\n"
+            "Rules:\n"
+            "- Return full updated Mermaid code, not delta.\n"
+            "- Keep existing lines unless user asks to change them.\n"
+            "- Keep code valid for the diagram type.\n"
+            "- change_summary must mention impacted area in one sentence.\n"
+        )
+        result = self.llm_client.complete_json(system_prompt, user_prompt, temperature=0.2)
+        code = sanitize_mermaid_code(diagram_type, str(result.get("mermaid_code", "")), current_code)
+        return MermaidTurn(
+            assistant_message=str(result.get("assistant_message", "Updated Mermaid diagram.")).strip()
+            or "Updated Mermaid diagram.",
+            mermaid_code=code,
+            source="llm",
+            phase="update",
+            change_summary=str(result.get("change_summary", "Diagram updated.")).strip()
+            or "Diagram updated.",
+        )
+
+    def _run_fallback_initial(self, diagram_type: str) -> MermaidTurn:
+        fallback_code = _default_mermaid_template(diagram_type)
+        return MermaidTurn(
+            assistant_message="Loaded a baseline template. Add details in Orchestration or Manual mode.",
+            mermaid_code=fallback_code,
+            source="fallback",
+            phase="initial",
+            change_summary="Baseline template loaded.",
+        )
+
+    def _run_fallback_update(self, diagram_type: str, current_code: str) -> MermaidTurn:
+        return MermaidTurn(
+            assistant_message="LLM is disabled. Kept current code; switch to Manual mode for direct edits.",
+            mermaid_code=sanitize_mermaid_code(diagram_type, current_code),
+            source="fallback",
+            phase="update",
+            change_summary="No automatic update applied in fallback mode.",
+        )
+
+
 def sanitize_graph_data(raw: Dict[str, Any]) -> GraphData:
     raw_nodes = raw.get("nodes", []) if isinstance(raw, dict) else []
     raw_edges = raw.get("edges", []) if isinstance(raw, dict) else []
@@ -432,3 +566,50 @@ def _format_history(history: List[ChatMessage]) -> str:
         content = msg.get("content", "")
         lines.append(f"{role}: {content}")
     return "\n".join(lines) if lines else "(no history)"
+
+
+MERMAID_HEADERS = {
+    "Flowchart": "graph TD",
+    "Sequence": "sequenceDiagram",
+    "State": "stateDiagram-v2",
+    "ER": "erDiagram",
+    "Class": "classDiagram",
+    "Gantt": "gantt",
+}
+
+
+def sanitize_mermaid_code(diagram_type: str, raw_code: str, fallback_code: str = "") -> str:
+    code = _strip_code_fence(raw_code or "")
+    if not code.strip():
+        code = _strip_code_fence(fallback_code or "")
+
+    expected_header = MERMAID_HEADERS.get(diagram_type, "").strip()
+    stripped = code.strip()
+    if not stripped:
+        stripped = expected_header
+
+    first_line = stripped.splitlines()[0].strip() if stripped.splitlines() else ""
+    if expected_header and first_line != expected_header:
+        stripped = f"{expected_header}\n{stripped}"
+
+    return stripped.rstrip() + "\n"
+
+
+def _strip_code_fence(text: str) -> str:
+    stripped = (text or "").strip()
+    if not stripped.startswith("```"):
+        return stripped
+
+    lines = stripped.splitlines()
+    if lines and lines[0].startswith("```"):
+        lines = lines[1:]
+    if lines and lines[-1].strip() == "```":
+        lines = lines[:-1]
+    return "\n".join(lines).strip()
+
+
+def _default_mermaid_template(diagram_type: str) -> str:
+    templates = list_mermaid_templates(diagram_type)
+    if templates:
+        return sanitize_mermaid_code(diagram_type, get_mermaid_template(diagram_type, templates[0]["id"]))
+    return sanitize_mermaid_code(diagram_type, MERMAID_HEADERS.get(diagram_type, "graph TD"))

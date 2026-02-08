@@ -18,6 +18,7 @@ from src.mermaid_generator.graph_logic import (  # noqa: E402
 )
 from src.mermaid_generator.orchestrator import (  # noqa: E402
     FlowchartOrchestrator,
+    MermaidDiagramOrchestrator,
 )
 from src.mermaid_generator.templates import (  # noqa: E402
     DIAGRAM_TYPES,
@@ -36,6 +37,15 @@ from src.mermaid_generator.ui_mapper import (  # noqa: E402
 @st.cache_resource
 def get_orchestrator() -> FlowchartOrchestrator:
     return FlowchartOrchestrator()
+
+
+@st.cache_resource
+def get_mermaid_orchestrator() -> MermaidDiagramOrchestrator:
+    return MermaidDiagramOrchestrator()
+
+
+def mermaid_editor_key(diagram_type: str) -> str:
+    return f"mermaid_editor_{diagram_type.lower()}"
 
 
 def to_flow_state(nodes_data: list, edges_data: list, positions: dict) -> StreamlitFlowState:
@@ -68,10 +78,51 @@ def ensure_state() -> None:
         st.session_state.source = "fallback"
     if "diagram_type" not in st.session_state:
         st.session_state.diagram_type = "Flowchart"
-    if "mermaid_code" not in st.session_state:
-        st.session_state.mermaid_code = ""
+    if "mermaid_code_by_type" not in st.session_state:
+        st.session_state.mermaid_code_by_type = {}
+    if "mermaid_chat_history_by_type" not in st.session_state:
+        st.session_state.mermaid_chat_history_by_type = {}
+    if "mermaid_agent_state_by_type" not in st.session_state:
+        st.session_state.mermaid_agent_state_by_type = {}
+    if "edit_mode_by_type" not in st.session_state:
+        st.session_state.edit_mode_by_type = {}
     if "default_template_loaded" not in st.session_state:
         st.session_state.default_template_loaded = False
+
+    for diagram_type in DIAGRAM_TYPES:
+        if diagram_type != "Flowchart":
+            if diagram_type not in st.session_state.mermaid_chat_history_by_type:
+                st.session_state.mermaid_chat_history_by_type[diagram_type] = []
+            if diagram_type not in st.session_state.mermaid_agent_state_by_type:
+                st.session_state.mermaid_agent_state_by_type[diagram_type] = {
+                    "phase": "initial",
+                    "source": "fallback",
+                    "message": "No Mermaid diagram yet.",
+                }
+            if diagram_type not in st.session_state.mermaid_code_by_type:
+                templates = list_mermaid_templates(diagram_type)
+                if templates:
+                    st.session_state.mermaid_code_by_type[diagram_type] = get_mermaid_template(
+                        diagram_type, templates[0]["id"]
+                    )
+                else:
+                    st.session_state.mermaid_code_by_type[diagram_type] = ""
+            editor_key = mermaid_editor_key(diagram_type)
+            if editor_key not in st.session_state:
+                st.session_state[editor_key] = st.session_state.mermaid_code_by_type[diagram_type]
+        if diagram_type not in st.session_state.edit_mode_by_type:
+            st.session_state.edit_mode_by_type[diagram_type] = (
+                "Orchestration" if diagram_type == "Flowchart" else "Manual"
+            )
+
+
+def get_mermaid_code(diagram_type: str) -> str:
+    return str(st.session_state.mermaid_code_by_type.get(diagram_type, ""))
+
+
+def set_mermaid_code(diagram_type: str, code: str) -> None:
+    st.session_state.mermaid_code_by_type[diagram_type] = code
+    st.session_state[mermaid_editor_key(diagram_type)] = code
 
 
 def apply_graph_data(graph_data: dict, impact_message: str) -> None:
@@ -119,6 +170,25 @@ def run_agent_turn(user_message: str) -> None:
         st.session_state.flow_state = to_flow_state(
             turn.graph_data["nodes"], turn.graph_data["edges"], positions
         )
+
+
+def run_mermaid_agent_turn(diagram_type: str, user_message: str) -> None:
+    orchestrator = get_mermaid_orchestrator()
+    history = st.session_state.mermaid_chat_history_by_type.setdefault(diagram_type, [])
+    current_code = get_mermaid_code(diagram_type)
+    turn = orchestrator.run_turn(
+        diagram_type=diagram_type,
+        user_message=user_message,
+        chat_history=history,
+        current_code=current_code,
+    )
+    history.append({"role": "assistant", "content": turn.assistant_message})
+    set_mermaid_code(diagram_type, turn.mermaid_code)
+    st.session_state.mermaid_agent_state_by_type[diagram_type] = {
+        "phase": turn.phase,
+        "source": turn.source,
+        "message": turn.change_summary,
+    }
 
 
 def render_impact_summary(impact: dict) -> None:
@@ -172,9 +242,21 @@ if not st.session_state.default_template_loaded:
     apply_flowchart_template("ec_purchase")
     st.session_state.default_template_loaded = True
 
+selected_mode = st.session_state.edit_mode_by_type.get(st.session_state.diagram_type, "Manual")
+
 with st.sidebar:
     st.markdown("### Diagram Type")
     diagram_type = st.selectbox("Type", DIAGRAM_TYPES, key="diagram_type")
+    current_mode = st.session_state.edit_mode_by_type.get(
+        diagram_type, "Orchestration" if diagram_type == "Flowchart" else "Manual"
+    )
+    selected_mode = st.radio(
+        "Work Mode",
+        ["Orchestration", "Manual"],
+        index=0 if current_mode == "Orchestration" else 1,
+        horizontal=True,
+    )
+    st.session_state.edit_mode_by_type[diagram_type] = selected_mode
 
     if diagram_type == "Flowchart":
         templates = list_flowchart_templates()
@@ -206,11 +288,14 @@ with st.sidebar:
                 "impacted_edge_ids": [],
             }
 
-        st.markdown("### Agent Status")
-        st.write(f"`mode`: {st.session_state.mode}")
-        st.write(f"`source`: {st.session_state.source}")
-        st.markdown("### Scope Summary")
-        st.caption(st.session_state.scope_summary or "(empty)")
+        if selected_mode == "Orchestration":
+            st.markdown("### Agent Status")
+            st.write(f"`mode`: {st.session_state.mode}")
+            st.write(f"`source`: {st.session_state.source}")
+            st.markdown("### Scope Summary")
+            st.caption(st.session_state.scope_summary or "(empty)")
+        else:
+            st.caption("Manual mode: drag and edit nodes directly in the canvas.")
     else:
         mermaid_templates = list_mermaid_templates(diagram_type)
         if mermaid_templates:
@@ -227,22 +312,35 @@ with st.sidebar:
             )
             st.caption(lookup[selected_mermaid_id]["description"])
             if st.button("Load Mermaid Template", use_container_width=True):
-                st.session_state.mermaid_code = get_mermaid_template(diagram_type, selected_mermaid_id)
+                set_mermaid_code(diagram_type, get_mermaid_template(diagram_type, selected_mermaid_id))
         else:
             st.info("No predefined templates for this diagram type yet.")
 
-        st.caption("Flowchart copilot chat is available in Flowchart mode.")
+        if selected_mode == "Orchestration":
+            agent_state = st.session_state.mermaid_agent_state_by_type.get(
+                diagram_type, {"phase": "initial", "source": "fallback", "message": ""}
+            )
+            st.markdown("### Agent Status")
+            st.write(f"`phase`: {agent_state.get('phase', 'initial')}")
+            st.write(f"`source`: {agent_state.get('source', 'fallback')}")
+            st.caption(agent_state.get("message", ""))
+        else:
+            st.caption("Manual mode: edit Mermaid code directly.")
 
 if st.session_state.diagram_type == "Flowchart":
-    prompt = st.chat_input("初回はスコープ定義、2回目以降は変更指示を入力")
-    if prompt:
-        st.session_state.chat_history.append({"role": "user", "content": prompt})
-        run_agent_turn(prompt)
+    if selected_mode == "Orchestration":
+        prompt = st.chat_input("初回はスコープ定義、2回目以降は変更指示を入力")
+        if prompt:
+            st.session_state.chat_history.append({"role": "user", "content": prompt})
+            run_agent_turn(prompt)
 
-    st.subheader("Copilot Chat")
-    for message in st.session_state.chat_history:
-        with st.chat_message(message["role"]):
-            st.write(message["content"])
+        st.subheader("Copilot Chat")
+        for message in st.session_state.chat_history:
+            with st.chat_message(message["role"]):
+                st.write(message["content"])
+    else:
+        st.subheader("Manual Flowchart")
+        st.caption("Use template + direct drag editing without agent updates.")
 
     st.subheader("Editor")
     st.caption("Drag nodes to refine layout")
@@ -262,36 +360,63 @@ if st.session_state.diagram_type == "Flowchart":
         st.markdown("### Mermaid Export")
         st.code(mermaid_text, language="mermaid")
     with col2:
-        st.markdown("### Impact Summary")
-        render_impact_summary(st.session_state.impact)
-        st.caption(st.session_state.impact.get("message", ""))
-        st.markdown("### Impact Range")
-        st.json(st.session_state.impact, expanded=False)
+        if selected_mode == "Orchestration":
+            st.markdown("### Impact Summary")
+            render_impact_summary(st.session_state.impact)
+            st.caption(st.session_state.impact.get("message", ""))
+            st.markdown("### Impact Range")
+            st.json(st.session_state.impact, expanded=False)
         st.markdown("### Debug")
         st.json({"node_count": len(curr_state.nodes), "edge_count": len(curr_state.edges)}, expanded=False)
 
-    st.caption("Set OPENAI_API_KEY to enable real LLM orchestration.")
+    if selected_mode == "Orchestration":
+        st.caption("Set OPENAI_API_KEY to enable real LLM orchestration.")
 else:
-    if not st.session_state.mermaid_code:
-        templates = list_mermaid_templates(st.session_state.diagram_type)
-        if templates:
-            st.session_state.mermaid_code = get_mermaid_template(
-                st.session_state.diagram_type, templates[0]["id"]
+    diagram_type = st.session_state.diagram_type
+    if selected_mode == "Orchestration":
+        prompt = st.chat_input(f"{diagram_type} の変更指示を入力")
+        if prompt:
+            st.session_state.mermaid_chat_history_by_type[diagram_type].append(
+                {"role": "user", "content": prompt}
             )
+            run_mermaid_agent_turn(diagram_type, prompt)
 
-    st.subheader(f"{st.session_state.diagram_type} Mermaid Editor")
-    st.session_state.mermaid_code = st.text_area(
-        "Mermaid Code",
-        value=st.session_state.mermaid_code,
-        height=520,
-    )
+        st.subheader(f"{diagram_type} Copilot Chat")
+        for message in st.session_state.mermaid_chat_history_by_type[diagram_type]:
+            with st.chat_message(message["role"]):
+                st.write(message["content"])
 
-    col1, col2 = st.columns(2)
-    with col1:
-        st.markdown("### Mermaid Preview")
-        render_mermaid_preview(st.session_state.mermaid_code, height=540)
-    with col2:
-        st.markdown("### Mermaid Code")
-        st.code(st.session_state.mermaid_code, language="mermaid")
-        st.markdown("### Notes")
-        st.caption("This mode uses Mermaid rendering preview. Flowchart GUI editing is available in Flowchart mode.")
+        code = get_mermaid_code(diagram_type)
+        col1, col2 = st.columns(2)
+        with col1:
+            st.markdown("### Mermaid Preview")
+            render_mermaid_preview(code, height=540)
+        with col2:
+            agent_state = st.session_state.mermaid_agent_state_by_type.get(
+                diagram_type, {"phase": "initial", "source": "fallback", "message": ""}
+            )
+            st.markdown("### Mermaid Code")
+            st.code(code, language="mermaid")
+            st.markdown("### Change Summary")
+            st.caption(agent_state.get("message", ""))
+            st.markdown("### Source")
+            st.caption(agent_state.get("source", "fallback"))
+        st.caption("Set OPENAI_API_KEY to enable real LLM orchestration.")
+    else:
+        st.subheader(f"{diagram_type} Mermaid Editor")
+        edited_code = st.text_area(
+            "Mermaid Code",
+            key=mermaid_editor_key(diagram_type),
+            height=520,
+        )
+        set_mermaid_code(diagram_type, edited_code)
+
+        col1, col2 = st.columns(2)
+        with col1:
+            st.markdown("### Mermaid Preview")
+            render_mermaid_preview(edited_code, height=540)
+        with col2:
+            st.markdown("### Mermaid Code")
+            st.code(edited_code, language="mermaid")
+            st.markdown("### Notes")
+            st.caption("Switch to Orchestration mode to update this diagram through chat.")
