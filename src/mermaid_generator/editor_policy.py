@@ -1,4 +1,4 @@
-from typing import Dict
+from typing import Dict, List
 
 from .templates import DIAGRAM_TYPES
 
@@ -27,3 +27,27 @@ def get_editor_capabilities(diagram_type: str, mode: str) -> Dict[str, bool]:
 def get_export_filename(diagram_type: str) -> str:
     base = diagram_type.strip().lower().replace(" ", "_")
     return f"{base}_diagram.mmd"
+
+
+def get_focus_layout_policy(diagram_type: str, mode: str) -> Dict[str, object]:
+    capabilities = get_editor_capabilities(diagram_type, mode)
+    primary_sections: List[str] = ["preview"]
+    if capabilities["chat"]:
+        primary_sections.insert(0, "chat")
+
+    collapsed_sections = [
+        "canvas_editor",
+        "export",
+        "candidate_management",
+    ]
+    if diagram_type == "Flowchart":
+        collapsed_sections.append("impact_debug")
+    else:
+        collapsed_sections.extend(["property_editor", "agent_details"])
+
+    return {
+        "primary_sections": primary_sections,
+        "collapsed_sections": collapsed_sections,
+        "chat_enabled": capabilities["chat"],
+        "preview_enabled": capabilities["preview"],
+    }

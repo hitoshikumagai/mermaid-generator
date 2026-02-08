@@ -36,6 +36,7 @@ from src.mermaid_generator.templates import (  # noqa: E402
 from src.mermaid_generator.editor_policy import (  # noqa: E402
     get_editor_capabilities,
     get_export_filename,
+    get_focus_layout_policy,
 )
 from src.mermaid_generator.ui_mapper import (  # noqa: E402
     flow_items_to_graph_data,
@@ -1094,8 +1095,11 @@ with st.sidebar:
         else:
             st.caption("Manual mode: drag and edit nodes directly in the canvas.")
 
+layout_policy = get_focus_layout_policy(st.session_state.diagram_type, selected_mode)
+collapsed_sections = set(layout_policy.get("collapsed_sections", []))
+
 if st.session_state.diagram_type == "Flowchart":
-    if selected_mode == "Orchestration":
+    if layout_policy["chat_enabled"]:
         prompt = st.chat_input("初回はスコープ定義、2回目以降は変更指示を入力")
         if prompt:
             st.session_state.chat_history.append({"role": "user", "content": prompt})
@@ -1109,29 +1113,30 @@ if st.session_state.diagram_type == "Flowchart":
         st.subheader("Manual Flowchart")
         st.caption("Use template + direct drag editing without agent updates.")
 
-    st.subheader("Editor")
-    st.caption("Drag nodes to refine layout")
-
-    curr_state = streamlit_flow(
-        "flow",
-        coerce_flow_state(st.session_state.flow_state),
-        fit_view=True,
-        height=520,
-    )
+    with st.expander("Canvas Editor", expanded="canvas_editor" not in collapsed_sections):
+        st.caption("Drag nodes to refine layout")
+        curr_state = streamlit_flow(
+            "flow",
+            coerce_flow_state(st.session_state.flow_state),
+            fit_view=True,
+            height=520,
+        )
+        st.session_state.flow_state = coerce_flow_state(curr_state)
 
     current_nodes, current_edges = flow_items_to_graph_data(curr_state.nodes, curr_state.edges)
     mermaid_text = export_to_mermaid(current_nodes, current_edges)
 
+    st.markdown("### Flowchart Preview")
     toggle_label = (
         "Exit Fullscreen Preview" if st.session_state.flow_preview_fullscreen else "Fullscreen Flowchart Preview"
     )
     if st.button(toggle_label, key="flow_preview_fullscreen_toggle", use_container_width=False):
         st.session_state.flow_preview_fullscreen = not st.session_state.flow_preview_fullscreen
         st.rerun()
+    render_mermaid_preview(mermaid_text, height=860 if st.session_state.flow_preview_fullscreen else 540)
 
-    if st.session_state.flow_preview_fullscreen:
-        st.markdown("### Flowchart Preview (Fullscreen)")
-        render_mermaid_preview(mermaid_text, height=860)
+    with st.expander("Export", expanded="export" not in collapsed_sections):
+        st.code(mermaid_text, language="mermaid")
         st.download_button(
             "Export Mermaid (.mmd)",
             data=mermaid_text,
@@ -1139,57 +1144,34 @@ if st.session_state.diagram_type == "Flowchart":
             mime="text/plain",
             use_container_width=True,
         )
-        with st.expander("Mermaid Export / Details", expanded=False):
-            st.code(mermaid_text, language="mermaid")
-            if selected_mode == "Orchestration":
-                st.markdown("### Impact Summary")
-                render_impact_summary(st.session_state.impact)
-                st.caption(st.session_state.impact.get("message", ""))
-                st.markdown("### Impact Range")
-                st.json(st.session_state.impact, expanded=False)
-            st.markdown("### Debug")
-            st.json({"node_count": len(curr_state.nodes), "edge_count": len(curr_state.edges)}, expanded=False)
-            render_candidate_manager(
-                "Flowchart",
-                mermaid_text,
-                {"nodes": current_nodes, "edges": current_edges},
-            )
-    else:
-        col1, col2 = st.columns(2)
-        with col1:
-            st.markdown("### Flowchart Preview")
-            render_mermaid_preview(mermaid_text, height=420)
-            st.markdown("### Mermaid Export")
-            st.code(mermaid_text, language="mermaid")
-            st.download_button(
-                "Export Mermaid (.mmd)",
-                data=mermaid_text,
-                file_name=get_export_filename("Flowchart"),
-                mime="text/plain",
-                use_container_width=True,
-            )
-        with col2:
-            if selected_mode == "Orchestration":
-                st.markdown("### Impact Summary")
-                render_impact_summary(st.session_state.impact)
-                st.caption(st.session_state.impact.get("message", ""))
-                st.markdown("### Impact Range")
-                st.json(st.session_state.impact, expanded=False)
-            st.markdown("### Debug")
-            st.json({"node_count": len(curr_state.nodes), "edge_count": len(curr_state.edges)}, expanded=False)
-            render_candidate_manager(
-                "Flowchart",
-                mermaid_text,
-                {"nodes": current_nodes, "edges": current_edges},
-            )
 
-    if selected_mode == "Orchestration":
+    if layout_policy["chat_enabled"]:
+        with st.expander("Impact + Debug", expanded="impact_debug" not in collapsed_sections):
+            st.markdown("### Impact Summary")
+            render_impact_summary(st.session_state.impact)
+            st.caption(st.session_state.impact.get("message", ""))
+            st.markdown("### Impact Range")
+            st.json(st.session_state.impact, expanded=False)
+            st.markdown("### Debug")
+            st.json({"node_count": len(curr_state.nodes), "edge_count": len(curr_state.edges)}, expanded=False)
+    else:
+        with st.expander("Debug", expanded=False):
+            st.json({"node_count": len(curr_state.nodes), "edge_count": len(curr_state.edges)}, expanded=False)
+
+    with st.expander("Candidate Management", expanded="candidate_management" not in collapsed_sections):
+        render_candidate_manager(
+            "Flowchart",
+            mermaid_text,
+            {"nodes": current_nodes, "edges": current_edges},
+        )
+
+    if layout_policy["chat_enabled"]:
         st.caption("Configure API key in LLM Settings (Environment or Input in App) to enable real LLM orchestration.")
 else:
     diagram_type = st.session_state.diagram_type
     capabilities = get_editor_capabilities(diagram_type, selected_mode)
 
-    if capabilities["chat"]:
+    if layout_policy["chat_enabled"] and capabilities["chat"]:
         prompt = st.chat_input(f"{diagram_type} の変更指示を入力")
         if prompt:
             st.session_state.mermaid_chat_history_by_type[diagram_type].append(
@@ -1202,29 +1184,28 @@ else:
             with st.chat_message(message["role"]):
                 st.write(message["content"])
 
-    st.subheader(f"{diagram_type} Editor")
-    st.caption("Shared editor surface: edit, preview, export.")
     graph_data = get_canvas_graph(diagram_type)
     positions = calculate_layout_positions(graph_data["nodes"], graph_data["edges"])
     flow_state = to_flow_state(graph_data["nodes"], graph_data["edges"], positions)
-    curr_state = streamlit_flow(
-        f"flow_{diagram_type.lower()}",
-        flow_state,
-        fit_view=True,
-        height=520,
-    )
+    with st.expander("Canvas Editor", expanded="canvas_editor" not in collapsed_sections):
+        st.caption("Drag nodes to refine layout")
+        curr_state = streamlit_flow(
+            f"flow_{diagram_type.lower()}",
+            flow_state,
+            fit_view=True,
+            height=520,
+        )
+
     current_nodes, current_edges = flow_items_to_graph_data(curr_state.nodes, curr_state.edges)
     current_graph = {"nodes": current_nodes, "edges": current_edges}
     set_canvas_graph(diagram_type, current_graph)
     code = graph_to_mermaid(diagram_type, current_graph)
     set_mermaid_code(diagram_type, code)
 
-    col1, col2 = st.columns(2)
-    with col1:
-        st.markdown("### Mermaid Preview")
-        render_mermaid_preview(code, height=540)
-    with col2:
-        st.markdown("### Mermaid Export")
+    st.markdown(f"### {diagram_type} Preview")
+    render_mermaid_preview(code, height=560)
+
+    with st.expander("Export", expanded="export" not in collapsed_sections):
         st.code(code, language="mermaid")
         st.download_button(
             "Export Mermaid (.mmd)",
@@ -1233,14 +1214,20 @@ else:
             mime="text/plain",
             use_container_width=True,
         )
+
+    with st.expander("Property Editor", expanded="property_editor" not in collapsed_sections):
         updated_graph = render_property_panel(diagram_type, current_graph)
         if updated_graph != current_graph:
             set_canvas_graph(diagram_type, updated_graph)
             updated_code = graph_to_mermaid(diagram_type, updated_graph)
             set_mermaid_code(diagram_type, updated_code)
             st.rerun()
+
+    with st.expander("Candidate Management", expanded="candidate_management" not in collapsed_sections):
         render_candidate_manager(diagram_type, code, current_graph)
-        if capabilities["chat"]:
+
+    if capabilities["chat"]:
+        with st.expander("Agent Details", expanded="agent_details" not in collapsed_sections):
             agent_state = st.session_state.mermaid_agent_state_by_type.get(
                 diagram_type, {"phase": "initial", "source": "fallback", "message": ""}
             )
@@ -1248,4 +1235,4 @@ else:
             st.caption(agent_state.get("message", ""))
             st.markdown("### Source")
             st.caption(agent_state.get("source", "fallback"))
-            st.caption("Configure API key in LLM Settings (Environment or Input in App) to enable real LLM orchestration.")
+        st.caption("Configure API key in LLM Settings (Environment or Input in App) to enable real LLM orchestration.")
