@@ -93,6 +93,20 @@ def test_export_to_mermaid_handles_labeled_and_unlabeled_edges():
     assert "n2 --> n1;" in mermaid
 
 
+def test_export_to_mermaid_avoids_reserved_node_ids():
+    nodes = [
+        {"id": "start", "label": "Start", "type": "input"},
+        {"id": "end", "label": "End", "type": "output"},
+    ]
+    edges = [
+        {"id": "e1", "source": "start", "target": "end", "label": ""},
+    ]
+    mermaid = export_to_mermaid(nodes, edges)
+
+    assert 'node_end["End"]' in mermaid
+    assert "start --> node_end;" in mermaid
+
+
 def test_edge_aware_layout_reduces_crossing_for_bipartite_case():
     nodes = [
         {"id": "a", "label": "A", "type": "input"},

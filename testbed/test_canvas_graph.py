@@ -57,7 +57,7 @@ def test_graph_to_mermaid_flowchart_uses_graph_header():
     code = graph_to_mermaid("Flowchart", graph)
 
     assert code.startswith("graph TD;\n")
-    assert "start --> end;" in code
+    assert "start --> node_end;" in code
 
 
 def test_sequence_roundtrip_preserves_return_message_direction():

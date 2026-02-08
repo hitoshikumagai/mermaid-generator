@@ -13,6 +13,18 @@ LAYER_Y_GAP = 170.0
 PADDING_X = 120.0
 PADDING_Y = 80.0
 
+MERMAID_RESERVED_IDS = {
+    "end",
+    "subgraph",
+    "graph",
+    "flowchart",
+    "style",
+    "linkstyle",
+    "class",
+    "classdef",
+    "click",
+}
+
 
 def build_mock_graph(topic: str) -> GraphData:
     cleaned_topic = _normalize_topic_label(topic)
@@ -65,8 +77,8 @@ def build_structured_flow_graph(
 
         previous_main_id = main_id
 
-    nodes.append({"id": "end", "label": "End", "type": "output"})
-    edges.append({"id": f"e{edge_counter}", "source": previous_main_id, "target": "end", "label": "done"})
+    nodes.append({"id": "end_node", "label": "End", "type": "output"})
+    edges.append({"id": f"e{edge_counter}", "source": previous_main_id, "target": "end_node", "label": "done"})
     return {"nodes": nodes, "edges": edges}
 
 
@@ -92,15 +104,39 @@ def calculate_layout_positions(
 
 def export_to_mermaid(nodes_data: List[NodeData], edges_data: List[EdgeData]) -> str:
     lines = ["graph TD;"]
+    id_map: Dict[str, str] = {}
+    used_ids = set()
+
+    for index, node in enumerate(nodes_data, start=1):
+        raw_id = str(node.get("id", "")).strip() or f"node_{index}"
+        if raw_id in id_map:
+            continue
+        safe_id = _to_mermaid_safe_id(raw_id)
+        base_id = safe_id
+        suffix = 2
+        while safe_id in used_ids:
+            safe_id = f"{base_id}_{suffix}"
+            suffix += 1
+        used_ids.add(safe_id)
+        id_map[raw_id] = safe_id
+
     for node in nodes_data:
-        label = node.get("label", "").replace('"', '\\"')
-        lines.append(f'    {node["id"]}["{label}"];')
+        raw_id = str(node.get("id", "")).strip()
+        safe_id = id_map.get(raw_id, "")
+        if not safe_id:
+            continue
+        label = _sanitize_mermaid_label(node.get("label", ""))
+        lines.append(f'    {safe_id}["{label}"];')
     for edge in edges_data:
-        label = edge.get("label", "").replace('"', '\\"')
+        source = id_map.get(str(edge.get("source", "")).strip(), "")
+        target = id_map.get(str(edge.get("target", "")).strip(), "")
+        if not source or not target:
+            continue
+        label = _sanitize_mermaid_edge_label(edge.get("label", ""))
         if label:
-            lines.append(f'    {edge["source"]} -->|{label}| {edge["target"]};')
+            lines.append(f'    {source} -->|{label}| {target};')
         else:
-            lines.append(f'    {edge["source"]} --> {edge["target"]};')
+            lines.append(f'    {source} --> {target};')
     return "\n".join(lines) + "\n"
 
 
@@ -451,3 +487,26 @@ def _truncate_text(text: str, max_len: int) -> str:
     if len(text) <= max_len:
         return text
     return f"{text[: max_len - 3].rstrip()}..."
+
+
+def _to_mermaid_safe_id(raw_id: str) -> str:
+    normalized = re.sub(r"[^A-Za-z0-9_]+", "_", str(raw_id or "").strip())
+    normalized = re.sub(r"_+", "_", normalized).strip("_")
+    if not normalized:
+        normalized = "node"
+    if not re.match(r"^[A-Za-z_]", normalized):
+        normalized = f"n_{normalized}"
+    if normalized.lower() in MERMAID_RESERVED_IDS:
+        normalized = f"node_{normalized}"
+    return normalized
+
+
+def _sanitize_mermaid_label(label: str) -> str:
+    text = str(label or "")
+    text = text.replace("\n", " ")
+    text = text.replace('"', '\\"')
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _sanitize_mermaid_edge_label(label: str) -> str:
+    return _sanitize_mermaid_label(label).replace("|", "/")
