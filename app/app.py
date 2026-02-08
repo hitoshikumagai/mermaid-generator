@@ -17,6 +17,13 @@ from src.mermaid_generator.graph_logic import (  # noqa: E402
 from src.mermaid_generator.orchestrator import (  # noqa: E402
     FlowchartOrchestrator,
 )
+from src.mermaid_generator.templates import (  # noqa: E402
+    DIAGRAM_TYPES,
+    get_flowchart_template,
+    get_mermaid_template,
+    list_flowchart_templates,
+    list_mermaid_templates,
+)
 from src.mermaid_generator.ui_mapper import (  # noqa: E402
     flow_items_to_graph_data,
     to_flow_edge_specs,
@@ -57,6 +64,36 @@ def ensure_state() -> None:
         st.session_state.mode = "scope"
     if "source" not in st.session_state:
         st.session_state.source = "fallback"
+    if "diagram_type" not in st.session_state:
+        st.session_state.diagram_type = "Flowchart"
+    if "mermaid_code" not in st.session_state:
+        st.session_state.mermaid_code = ""
+    if "default_template_loaded" not in st.session_state:
+        st.session_state.default_template_loaded = False
+
+
+def apply_graph_data(graph_data: dict, impact_message: str) -> None:
+    st.session_state.graph_data = graph_data
+    positions = calculate_layout_positions(graph_data["nodes"], graph_data["edges"])
+    st.session_state.flow_state = to_flow_state(graph_data["nodes"], graph_data["edges"], positions)
+    st.session_state.impact = {
+        "phase": "initial",
+        "message": impact_message,
+        "impacted_node_ids": sorted([node["id"] for node in graph_data["nodes"]]),
+        "impacted_edge_ids": sorted([edge["id"] for edge in graph_data["edges"]]),
+        "added_node_ids": sorted([node["id"] for node in graph_data["nodes"]]),
+        "removed_node_ids": [],
+        "changed_node_ids": [],
+        "added_edge_ids": sorted([edge["id"] for edge in graph_data["edges"]]),
+        "removed_edge_ids": [],
+        "changed_edge_ids": [],
+    }
+
+
+def apply_flowchart_template(template_id: str) -> None:
+    template = get_flowchart_template(template_id)
+    st.session_state.scope_summary = f"Template: {template['name']} - {template['description']}"
+    apply_graph_data(template["graph"], f"Template loaded: {template['name']}")
 
 
 def run_agent_turn(user_message: str) -> None:
@@ -82,48 +119,139 @@ def run_agent_turn(user_message: str) -> None:
         )
 
 
+def render_impact_summary(impact: dict) -> None:
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Added Nodes", len(impact.get("added_node_ids", [])))
+    c2.metric("Changed Nodes", len(impact.get("changed_node_ids", [])))
+    c3.metric("Added/Changed Edges", len(impact.get("added_edge_ids", [])) + len(impact.get("changed_edge_ids", [])))
+
+
 st.set_page_config(layout="wide")
 st.title("Flowchart Copilot")
 ensure_state()
 
+if not st.session_state.default_template_loaded:
+    apply_flowchart_template("ec_purchase")
+    st.session_state.default_template_loaded = True
+
 with st.sidebar:
-    st.markdown("### Agent Status")
-    st.write(f"`mode`: {st.session_state.mode}")
-    st.write(f"`source`: {st.session_state.source}")
-    st.markdown("### Scope Summary")
-    st.caption(st.session_state.scope_summary or "(empty)")
+    st.markdown("### Diagram Type")
+    diagram_type = st.selectbox("Type", DIAGRAM_TYPES, key="diagram_type")
 
-prompt = st.chat_input("要件を入力してください（初回はスコープ、2回目以降は変更指示）")
-if prompt:
-    st.session_state.chat_history.append({"role": "user", "content": prompt})
-    run_agent_turn(prompt)
+    if diagram_type == "Flowchart":
+        templates = list_flowchart_templates()
+        template_ids = [tpl["id"] for tpl in templates]
+        template_lookup = {tpl["id"]: tpl for tpl in templates}
 
-st.subheader("Copilot Chat")
-for message in st.session_state.chat_history:
-    with st.chat_message(message["role"]):
-        st.write(message["content"])
+        if "selected_flowchart_template_id" not in st.session_state:
+            st.session_state.selected_flowchart_template_id = "ec_purchase"
 
-st.subheader("Editor")
-st.caption("Drag nodes to refine layout")
+        selected_id = st.selectbox(
+            "Common Template",
+            template_ids,
+            format_func=lambda x: template_lookup[x]["name"],
+            key="selected_flowchart_template_id",
+        )
+        st.caption(template_lookup[selected_id]["description"])
 
-curr_state = streamlit_flow(
-    "flow",
-    st.session_state.flow_state,
-    fit_view=True,
-    height=520,
-)
+        col_l, col_r = st.columns(2)
+        if col_l.button("Load Template", use_container_width=True):
+            apply_flowchart_template(selected_id)
+        if col_r.button("Start Blank", use_container_width=True):
+            st.session_state.graph_data = None
+            st.session_state.flow_state = StreamlitFlowState(nodes=[], edges=[])
+            st.session_state.scope_summary = ""
+            st.session_state.impact = {
+                "phase": "initial",
+                "message": "Blank canvas.",
+                "impacted_node_ids": [],
+                "impacted_edge_ids": [],
+            }
 
-current_nodes, current_edges = flow_items_to_graph_data(curr_state.nodes, curr_state.edges)
-mermaid_text = export_to_mermaid(current_nodes, current_edges)
+        st.markdown("### Agent Status")
+        st.write(f"`mode`: {st.session_state.mode}")
+        st.write(f"`source`: {st.session_state.source}")
+        st.markdown("### Scope Summary")
+        st.caption(st.session_state.scope_summary or "(empty)")
+    else:
+        mermaid_templates = list_mermaid_templates(diagram_type)
+        if mermaid_templates:
+            ids = [tpl["id"] for tpl in mermaid_templates]
+            lookup = {tpl["id"]: tpl for tpl in mermaid_templates}
+            key_name = f"selected_{diagram_type.lower()}_template_id"
+            if key_name not in st.session_state:
+                st.session_state[key_name] = ids[0]
+            selected_mermaid_id = st.selectbox(
+                "Common Template",
+                ids,
+                format_func=lambda x: lookup[x]["name"],
+                key=key_name,
+            )
+            st.caption(lookup[selected_mermaid_id]["description"])
+            if st.button("Load Mermaid Template", use_container_width=True):
+                st.session_state.mermaid_code = get_mermaid_template(diagram_type, selected_mermaid_id)
+        else:
+            st.info("No predefined templates for this diagram type yet.")
 
-col1, col2 = st.columns(2)
-with col1:
-    st.markdown("### Mermaid Export")
-    st.code(mermaid_text, language="mermaid")
-with col2:
-    st.markdown("### Impact Range")
-    st.json(st.session_state.impact, expanded=False)
-    st.markdown("### Debug")
-    st.json({"node_count": len(curr_state.nodes), "edge_count": len(curr_state.edges)}, expanded=False)
+        st.caption("Flowchart copilot chat is available in Flowchart mode.")
 
-st.caption("Set OPENAI_API_KEY to enable real LLM orchestration.")
+if st.session_state.diagram_type == "Flowchart":
+    prompt = st.chat_input("初回はスコープ定義、2回目以降は変更指示を入力")
+    if prompt:
+        st.session_state.chat_history.append({"role": "user", "content": prompt})
+        run_agent_turn(prompt)
+
+    st.subheader("Copilot Chat")
+    for message in st.session_state.chat_history:
+        with st.chat_message(message["role"]):
+            st.write(message["content"])
+
+    st.subheader("Editor")
+    st.caption("Drag nodes to refine layout")
+
+    curr_state = streamlit_flow(
+        "flow",
+        st.session_state.flow_state,
+        fit_view=True,
+        height=520,
+    )
+
+    current_nodes, current_edges = flow_items_to_graph_data(curr_state.nodes, curr_state.edges)
+    mermaid_text = export_to_mermaid(current_nodes, current_edges)
+
+    col1, col2 = st.columns(2)
+    with col1:
+        st.markdown("### Mermaid Export")
+        st.code(mermaid_text, language="mermaid")
+    with col2:
+        st.markdown("### Impact Summary")
+        render_impact_summary(st.session_state.impact)
+        st.caption(st.session_state.impact.get("message", ""))
+        st.markdown("### Impact Range")
+        st.json(st.session_state.impact, expanded=False)
+        st.markdown("### Debug")
+        st.json({"node_count": len(curr_state.nodes), "edge_count": len(curr_state.edges)}, expanded=False)
+
+    st.caption("Set OPENAI_API_KEY to enable real LLM orchestration.")
+else:
+    if not st.session_state.mermaid_code:
+        templates = list_mermaid_templates(st.session_state.diagram_type)
+        if templates:
+            st.session_state.mermaid_code = get_mermaid_template(
+                st.session_state.diagram_type, templates[0]["id"]
+            )
+
+    st.subheader(f"{st.session_state.diagram_type} Mermaid Editor")
+    st.session_state.mermaid_code = st.text_area(
+        "Mermaid Code",
+        value=st.session_state.mermaid_code,
+        height=520,
+    )
+
+    col1, col2 = st.columns(2)
+    with col1:
+        st.markdown("### Mermaid Export")
+        st.code(st.session_state.mermaid_code, language="mermaid")
+    with col2:
+        st.markdown("### Notes")
+        st.caption("This mode focuses on code templates. Flowchart GUI editing is available in Flowchart mode.")

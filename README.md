@@ -8,6 +8,9 @@ This repository provides a Python-only flowchart generator with a GUI editor. Th
 4. A lightweight orchestrator changes behavior by turn:
    - first turn: scope clarification + initial diagram generation
    - second turn onward: graph update + impact range detection
+5. Common Mermaid templates are selectable by default:
+   - Flowchart templates (GUI editable)
+   - Sequence/State/ER/Class/Gantt templates (code mode)
 
 The app lives under `app/` and business logic lives under `src/`.
 The `testbed/` directory is reserved for tests to support TDD.
@@ -51,6 +54,7 @@ pip install streamlit-flow-component==1.6.1
 
 - LLM: returns JSON with `nodes` and `edges`.
 - Orchestrator: manages first-turn scope flow and update-turn impact analysis.
+- Templates: provides common diagrams as defaults for faster start.
 - Layout: uses NetworkX to compute a simple hierarchical layout.
 - UI: Streamlit-Flow renders nodes/edges and supports drag-and-drop editing.
 - Export: UI state is converted to Mermaid syntax.
@@ -87,9 +91,11 @@ graph TD;
 - `app/app.py`: Streamlit UI entrypoint
 - `src/mermaid_generator/graph_logic.py`: business logic
 - `src/mermaid_generator/orchestrator.py`: LLM orchestration and impact range detection
+- `src/mermaid_generator/templates.py`: common Mermaid template catalog
 - `src/mermaid_generator/ui_mapper.py`: UI conversion functions (testable)
 - `testbed/test_graph_logic.py`: tests for TDD workflow
 - `testbed/test_orchestrator.py`: tests for first-turn/update-turn behavior
+- `testbed/test_templates.py`: tests for default template catalog
 - `testbed/test_ui_mapper.py`: tests for UI conversion
 
 ## Notes
