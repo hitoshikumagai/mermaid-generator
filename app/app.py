@@ -256,16 +256,45 @@ def set_canvas_graph(diagram_type: str, graph_data: dict) -> None:
     st.session_state.canvas_graph_by_type[diagram_type] = graph_data
 
 
+def get_workspace_scope_summary(diagram_type: str) -> str:
+    if diagram_type == "Flowchart":
+        return str(st.session_state.scope_summary or "")
+    state = st.session_state.mermaid_agent_state_by_type.get(diagram_type, {})
+    return str(state.get("message", "") or "")
+
+
+def get_workspace_chat_history(diagram_type: str) -> list:
+    if diagram_type == "Flowchart":
+        return list(st.session_state.chat_history or [])
+    return list(st.session_state.mermaid_chat_history_by_type.get(diagram_type, []) or [])
+
+
+def get_workspace_mode(diagram_type: str) -> str:
+    return str(st.session_state.edit_mode_by_type.get(diagram_type, "Manual") or "Manual")
+
+
 def apply_managed_diagram(diagram: dict) -> None:
     diagram_type = str(diagram.get("diagram_type", "") or "")
+    if diagram_type not in DIAGRAM_TYPES:
+        return
+    st.session_state.diagram_type = diagram_type
     mermaid_code = str(diagram.get("mermaid_code", "") or "")
     graph_data = diagram.get("graph_data")
+    scope_summary = str(diagram.get("scope_summary", "") or "")
+    chat_history = list(diagram.get("chat_history", []) or [])
+    mode = str(diagram.get("mode", "Manual") or "Manual")
+    st.session_state.edit_mode_by_type[diagram_type] = mode
     if not isinstance(graph_data, dict):
         graph_data = parse_mermaid_to_graph(diagram_type, mermaid_code)
 
     if diagram_type == "Flowchart":
+        st.session_state.scope_summary = scope_summary
+        st.session_state.chat_history = chat_history
+        st.session_state.mode = "visualize"
+        st.session_state.source = "stored"
         apply_graph_data(graph_data, f"Loaded candidate: {diagram.get('title', diagram.get('id', ''))}")
     else:
+        st.session_state.mermaid_chat_history_by_type[diagram_type] = chat_history
         set_canvas_graph(diagram_type, graph_data)
         if mermaid_code.strip():
             set_mermaid_code(diagram_type, mermaid_code, sync_editor=True)
@@ -274,7 +303,7 @@ def apply_managed_diagram(diagram: dict) -> None:
         st.session_state.mermaid_agent_state_by_type[diagram_type] = {
             "phase": "loaded",
             "source": "stored",
-            "message": f"Loaded candidate: {diagram.get('title', diagram.get('id', ''))}",
+            "message": scope_summary or f"Loaded candidate: {diagram.get('title', diagram.get('id', ''))}",
         }
 
 
@@ -288,26 +317,28 @@ def render_candidate_manager(diagram_type: str, mermaid_code: str, graph_data: d
         value=False,
         key=f"candidate_include_archived_{diagram_type.lower()}",
     )
-    all_diagrams = repository.list_diagrams(include_archived=include_archived)
-    diagrams = [d for d in all_diagrams if str(d.get("diagram_type", "")) == diagram_type]
+    diagrams = repository.list_diagrams(include_archived=include_archived)
     option_ids = [d["id"] for d in diagrams]
 
     def format_candidate(candidate_id: str) -> str:
         candidate = next((item for item in diagrams if item["id"] == candidate_id), None)
         if not candidate:
             return candidate_id
-        return f"{candidate['title']} [{candidate['status']}]"
+        dtype = candidate.get("diagram_type", "?")
+        mode = candidate.get("mode", "Manual")
+        updated = candidate.get("updated_at", "")
+        return f"{candidate['title']} [{dtype}/{mode}/{candidate['status']}] {updated}"
 
     if option_ids:
         selected_id = st.selectbox(
             "Saved candidates",
             options=option_ids,
             format_func=format_candidate,
-            key=f"candidate_select_{diagram_type.lower()}",
+            key="candidate_select_global",
             index=0,
         )
     else:
-        st.caption("No saved candidates for this diagram type.")
+        st.caption("No saved candidates.")
         selected_id = ""
 
     default_title = f"{diagram_type} Candidate"
@@ -324,6 +355,9 @@ def render_candidate_manager(diagram_type: str, mermaid_code: str, graph_data: d
             graph_data=graph_data,
             actor="user",
             tags=[diagram_type.lower()],
+            scope_summary=get_workspace_scope_summary(diagram_type),
+            chat_history=get_workspace_chat_history(diagram_type),
+            mode=get_workspace_mode(diagram_type),
         )
         st.success(f"Saved: {created['title']}")
         st.rerun()
@@ -336,20 +370,61 @@ def render_candidate_manager(diagram_type: str, mermaid_code: str, graph_data: d
         st.warning("Selected candidate was not found.")
         return
 
+    st.caption(
+        "metadata: "
+        f"type={selected_diagram.get('diagram_type', '?')} / "
+        f"mode={selected_diagram.get('mode', 'Manual')} / "
+        f"updated={selected_diagram.get('updated_at', '')}"
+    )
+
     row_load, row_update = st.columns(2)
     if row_load.button("Load Candidate", key=f"candidate_load_{diagram_type.lower()}"):
         apply_managed_diagram(selected_diagram)
         st.success(f"Loaded: {selected_diagram['title']}")
         st.rerun()
     if row_update.button("Save Update", key=f"candidate_save_update_{diagram_type.lower()}"):
-        repository.update_diagram_content(
-            diagram_id=selected_id,
-            mermaid_code=mermaid_code,
-            graph_data=graph_data,
-            actor="user",
-        )
-        st.success("Candidate updated.")
+        if selected_diagram.get("diagram_type") != diagram_type:
+            st.warning("Current canvas type does not match selected candidate type. Load it first.")
+        else:
+            repository.update_diagram_content(
+                diagram_id=selected_id,
+                mermaid_code=mermaid_code,
+                graph_data=graph_data,
+                actor="user",
+                scope_summary=get_workspace_scope_summary(diagram_type),
+                chat_history=get_workspace_chat_history(diagram_type),
+                mode=get_workspace_mode(diagram_type),
+            )
+            st.success("Candidate updated.")
+            st.rerun()
+
+    row_rename, row_duplicate = st.columns(2)
+    rename_title = st.text_input(
+        "Rename title",
+        value=str(selected_diagram.get("title", "")),
+        key=f"candidate_rename_{diagram_type.lower()}",
+    )
+    if row_rename.button("Rename", key=f"candidate_rename_btn_{diagram_type.lower()}"):
+        repository.rename_diagram(selected_id, rename_title, actor="user")
+        st.success("Candidate renamed.")
         st.rerun()
+    if row_duplicate.button("Duplicate", key=f"candidate_duplicate_{diagram_type.lower()}"):
+        duplicated = repository.duplicate_diagram(selected_id, actor="user")
+        st.success(f"Duplicated: {duplicated['title']}")
+        st.rerun()
+
+    row_delete, row_export = st.columns(2)
+    if row_delete.button("Delete", key=f"candidate_delete_{diagram_type.lower()}"):
+        repository.delete_diagram(selected_id, actor="user")
+        st.success("Candidate deleted.")
+        st.rerun()
+    row_export.download_button(
+        "Export Selected (.mmd)",
+        data=str(selected_diagram.get("mermaid_code", "")),
+        file_name=get_export_filename(str(selected_diagram.get("diagram_type", "Flowchart"))),
+        mime="text/plain",
+        use_container_width=True,
+    )
 
     current_status = str(selected_diagram.get("status", "active"))
     next_statuses = sorted(ALLOWED_STATUS_TRANSITIONS.get(current_status, set()))

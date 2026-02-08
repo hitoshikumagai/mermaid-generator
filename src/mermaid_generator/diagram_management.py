@@ -35,6 +35,9 @@ class DiagramRepository:
         graph_data: Dict[str, Any],
         actor: str = "user",
         tags: Optional[List[str]] = None,
+        scope_summary: str = "",
+        chat_history: Optional[List[Dict[str, str]]] = None,
+        mode: str = "Manual",
     ) -> DiagramRecord:
         diagrams = self._read_diagrams()
         now = _now_utc_iso()
@@ -46,6 +49,9 @@ class DiagramRepository:
             "mermaid_code": mermaid_code,
             "graph_data": deepcopy(graph_data),
             "tags": list(tags or []),
+            "scope_summary": str(scope_summary or ""),
+            "chat_history": deepcopy(chat_history or []),
+            "mode": str(mode or "Manual"),
             "created_at": now,
             "updated_at": now,
         }
@@ -80,11 +86,20 @@ class DiagramRepository:
         mermaid_code: str,
         graph_data: Dict[str, Any],
         actor: str = "user",
+        scope_summary: Optional[str] = None,
+        chat_history: Optional[List[Dict[str, str]]] = None,
+        mode: Optional[str] = None,
     ) -> DiagramRecord:
         diagrams = self._read_diagrams()
         target = _find_diagram(diagrams, diagram_id)
         target["mermaid_code"] = mermaid_code
         target["graph_data"] = deepcopy(graph_data)
+        if scope_summary is not None:
+            target["scope_summary"] = str(scope_summary)
+        if chat_history is not None:
+            target["chat_history"] = deepcopy(chat_history)
+        if mode is not None:
+            target["mode"] = str(mode)
         target["updated_at"] = _now_utc_iso()
         self._write_diagrams(diagrams)
         self.append_decision_event(
@@ -95,6 +110,64 @@ class DiagramRepository:
             markdown_comment="- content updated from editor",
             tags=["edit"],
         )
+        return deepcopy(target)
+
+    def rename_diagram(self, diagram_id: str, title: str, actor: str = "user") -> DiagramRecord:
+        diagrams = self._read_diagrams()
+        target = _find_diagram(diagrams, diagram_id)
+        previous_title = str(target.get("title", ""))
+        updated_title = title.strip() or previous_title
+        target["title"] = updated_title
+        target["updated_at"] = _now_utc_iso()
+        self._write_diagrams(diagrams)
+        self.append_decision_event(
+            diagram_id=diagram_id,
+            actor=actor,
+            stage="rename",
+            summary="Diagram renamed",
+            markdown_comment=f"- from: {previous_title}\n- to: {updated_title}",
+            tags=["rename"],
+        )
+        return deepcopy(target)
+
+    def duplicate_diagram(self, diagram_id: str, actor: str = "user") -> DiagramRecord:
+        diagrams = self._read_diagrams()
+        source = _find_diagram(diagrams, diagram_id)
+        now = _now_utc_iso()
+        duplicated = deepcopy(source)
+        duplicated["id"] = _new_id("d")
+        duplicated["title"] = f"{str(source.get('title', 'Diagram')).strip()} (Copy)"
+        duplicated["status"] = "active"
+        duplicated["created_at"] = now
+        duplicated["updated_at"] = now
+        diagrams.append(duplicated)
+        self._write_diagrams(diagrams)
+        self.append_decision_event(
+            diagram_id=duplicated["id"],
+            actor=actor,
+            stage="duplicate",
+            summary="Diagram duplicated",
+            markdown_comment=f"- source: {diagram_id}",
+            tags=["duplicate"],
+        )
+        return deepcopy(duplicated)
+
+    def delete_diagram(self, diagram_id: str, actor: str = "user") -> DiagramRecord:
+        diagrams = self._read_diagrams()
+        target = _find_diagram(diagrams, diagram_id)
+        next_diagrams = [diagram for diagram in diagrams if diagram.get("id") != diagram_id]
+        self._write_diagrams(next_diagrams)
+        deleted_event = {
+            "id": _new_id("ev"),
+            "diagram_id": diagram_id,
+            "actor": actor,
+            "stage": "delete",
+            "summary": "Diagram deleted",
+            "markdown_comment": f"- title: {target.get('title', '')}",
+            "tags": ["delete"],
+            "created_at": _now_utc_iso(),
+        }
+        _append_jsonl(self._event_file, deleted_event)
         return deepcopy(target)
 
     def set_status(self, diagram_id: str, status: str, actor: str = "user", reason: str = "") -> DiagramRecord:
