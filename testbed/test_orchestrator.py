@@ -85,6 +85,32 @@ class MermaidNoChangeStubClient:
         }
 
 
+class MermaidRepairStubClient:
+    def is_enabled(self) -> bool:
+        return True
+
+    def complete_json(self, system_prompt, user_prompt, temperature=0.2):
+        _ = user_prompt
+        _ = temperature
+        if "You fix invalid Mermaid code." in system_prompt:
+            return {
+                "assistant_message": "Repaired code.",
+                "change_summary": "Adjusted syntax.",
+                "mermaid_code": (
+                    "sequenceDiagram\n"
+                    "    participant C as Client\n"
+                    "    participant A as API\n"
+                    "    C->>A: request\n"
+                    "    A-->>C: response\n"
+                ),
+            }
+        return {
+            "assistant_message": "Initial draft ready.",
+            "change_summary": "Created first diagram.",
+            "mermaid_code": "sequenceDiagram\n    invalid line\n",
+        }
+
+
 def test_compute_impact_range_detects_changes():
     prev_graph = {
         "nodes": [
@@ -287,6 +313,20 @@ def test_mermaid_llm_no_change_triggers_verify_fallback():
     assert turn.phase == "update"
     assert turn.mermaid_code != current_code
     assert "verify" in turn.assistant_message.lower()
+
+
+def test_mermaid_llm_verify_failure_can_be_repaired_by_llm():
+    orchestrator = MermaidDiagramOrchestrator(llm_client=MermaidRepairStubClient())
+    turn = orchestrator.run_turn(
+        diagram_type="Sequence",
+        user_message="create request response flow",
+        chat_history=[],
+        current_code="",
+    )
+
+    assert turn.source == "llm"
+    assert "C->>A: request" in turn.mermaid_code
+    assert "Auto-repaired" in turn.change_summary
 
 
 def test_sanitize_mermaid_code_strips_fence_and_adds_header():

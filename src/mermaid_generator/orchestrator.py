@@ -354,6 +354,7 @@ class MermaidDiagramOrchestrator:
         self.act_agent = MermaidActAgent(sanitize_mermaid_code)
         self.verify_agent = MermaidVerifyAgent(sanitize_mermaid_code)
         self.role_coordinator = MermaidRoleCoordinator(sanitize_mermaid_code)
+        self.max_repair_attempts = 2
 
     def run_turn(
         self,
@@ -406,7 +407,13 @@ class MermaidDiagramOrchestrator:
         try:
             if has_code:
                 turn = self._run_llm_update(diagram_type, user_message, chat_history, current_code)
-                ok, reason = self.verify_agent.verify(diagram_type, turn.mermaid_code, current_code, user_message)
+                turn, ok, reason = self._verify_or_repair_llm_turn(
+                    diagram_type=diagram_type,
+                    turn=turn,
+                    user_message=user_message,
+                    chat_history=chat_history,
+                    current_code=current_code,
+                )
                 if ok:
                     return turn
                 if strict_llm:
@@ -425,7 +432,13 @@ class MermaidDiagramOrchestrator:
                     reason=f"verify failed: {reason}",
                 )
             turn = self._run_llm_initial(diagram_type, user_message, chat_history)
-            ok, reason = self.verify_agent.verify(diagram_type, turn.mermaid_code, "", user_message)
+            turn, ok, reason = self._verify_or_repair_llm_turn(
+                diagram_type=diagram_type,
+                turn=turn,
+                user_message=user_message,
+                chat_history=chat_history,
+                current_code="",
+            )
             if ok:
                 return turn
             if strict_llm:
@@ -506,6 +519,7 @@ class MermaidDiagramOrchestrator:
             "- Output a complete, runnable Mermaid diagram.\n"
             "- Keep it practical and under 24 lines.\n"
             "- Preserve language from user request when possible.\n"
+            "- Avoid reserved identifiers such as `end` for node IDs.\n"
         )
         result = self.llm_client.complete_json(system_prompt, user_prompt, temperature=0.2)
         code = sanitize_mermaid_code(diagram_type, str(result.get("mermaid_code", "")))
@@ -544,6 +558,7 @@ class MermaidDiagramOrchestrator:
             "- Keep existing lines unless user asks to change them.\n"
             "- Keep code valid for the diagram type.\n"
             "- change_summary must mention impacted area in one sentence.\n"
+            "- Avoid reserved identifiers such as `end` for node IDs.\n"
         )
         result = self.llm_client.complete_json(system_prompt, user_prompt, temperature=0.2)
         code = sanitize_mermaid_code(diagram_type, str(result.get("mermaid_code", "")), current_code)
@@ -555,6 +570,95 @@ class MermaidDiagramOrchestrator:
             phase="update",
             change_summary=str(result.get("change_summary", "Diagram updated.")).strip()
             or "Diagram updated.",
+        )
+
+    def _verify_or_repair_llm_turn(
+        self,
+        diagram_type: str,
+        turn: MermaidTurn,
+        user_message: str,
+        chat_history: List[ChatMessage],
+        current_code: str,
+    ) -> tuple[MermaidTurn, bool, str]:
+        ok, reason = self.verify_agent.verify(diagram_type, turn.mermaid_code, current_code, user_message)
+        if ok:
+            return turn, True, "ok"
+
+        latest_turn = turn
+        latest_reason = reason
+        for attempt in range(1, self.max_repair_attempts + 1):
+            repaired = self._repair_mermaid_with_llm(
+                diagram_type=diagram_type,
+                user_message=user_message,
+                chat_history=chat_history,
+                current_code=current_code,
+                invalid_code=latest_turn.mermaid_code,
+                verify_reason=latest_reason,
+                attempt=attempt,
+            )
+            if not repaired:
+                break
+            latest_turn = repaired
+            ok, latest_reason = self.verify_agent.verify(
+                diagram_type=diagram_type,
+                candidate_code=latest_turn.mermaid_code,
+                current_code=current_code,
+                user_message=user_message,
+            )
+            if ok:
+                latest_turn.change_summary = f"{latest_turn.change_summary} Auto-repaired after validation."
+                return latest_turn, True, "ok"
+
+        return latest_turn, False, latest_reason
+
+    def _repair_mermaid_with_llm(
+        self,
+        diagram_type: str,
+        user_message: str,
+        chat_history: List[ChatMessage],
+        current_code: str,
+        invalid_code: str,
+        verify_reason: str,
+        attempt: int,
+    ) -> Optional[MermaidTurn]:
+        history_text = _format_history(chat_history[-8:])
+        system_prompt = (
+            "You fix invalid Mermaid code. "
+            "Return JSON only with keys: assistant_message, mermaid_code, change_summary.\n"
+            "Do not explain outside JSON."
+        )
+        user_prompt = (
+            f"Diagram type: {diagram_type}\n"
+            f"Repair attempt: {attempt}\n"
+            f"Validation failure reason: {verify_reason}\n\n"
+            "Current Mermaid code before this turn:\n"
+            f"{current_code}\n\n"
+            "Invalid candidate Mermaid code:\n"
+            f"{invalid_code}\n\n"
+            "Conversation:\n"
+            f"{history_text}\n\n"
+            "Latest user request:\n"
+            f"{user_message}\n\n"
+            "Rules:\n"
+            "- Output full corrected Mermaid code only.\n"
+            "- Keep the requested intent.\n"
+            "- Keep diagram valid for the diagram type.\n"
+            "- Avoid reserved identifiers such as `end` for node IDs.\n"
+        )
+        try:
+            result = self.llm_client.complete_json(system_prompt, user_prompt, temperature=0.1)
+        except Exception:
+            return None
+
+        code = sanitize_mermaid_code(diagram_type, str(result.get("mermaid_code", "")), invalid_code)
+        return MermaidTurn(
+            assistant_message=str(result.get("assistant_message", "Repaired Mermaid diagram.")).strip()
+            or "Repaired Mermaid diagram.",
+            mermaid_code=code,
+            source="llm",
+            phase="update" if bool((current_code or "").strip()) else "initial",
+            change_summary=str(result.get("change_summary", "Diagram repaired.")).strip()
+            or "Diagram repaired.",
         )
 
     def _run_fallback_initial(
