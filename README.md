@@ -63,6 +63,8 @@ pip install streamlit-flow-component==1.6.1
 - UI: Streamlit-Flow renders nodes/edges and supports drag-and-drop editing.
 - Export: UI state is converted to Mermaid syntax.
 - Editor policy: all types support `edit + preview + export` with consistent controls.
+- Candidate management: save/load/update/archive candidates and log decision notes.
+- LLM decision assist: auto-generate decision notes; if API is unavailable, fallback markdown notes are logged.
 
 ## Editor UX Parity
 

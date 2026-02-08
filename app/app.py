@@ -51,6 +51,9 @@ from src.mermaid_generator.diagram_management import (  # noqa: E402
     ALLOWED_STATUS_TRANSITIONS,
     DiagramRepository,
 )
+from src.mermaid_generator.diagram_management_assistant import (  # noqa: E402
+    DiagramDecisionAssistant,
+)
 
 
 @st.cache_resource
@@ -66,6 +69,11 @@ def get_mermaid_orchestrator() -> MermaidDiagramOrchestrator:
 @st.cache_resource
 def get_diagram_repository() -> DiagramRepository:
     return DiagramRepository(ROOT_DIR / ".diagram_data")
+
+
+@st.cache_resource
+def get_diagram_assistant() -> DiagramDecisionAssistant:
+    return DiagramDecisionAssistant()
 
 
 def to_flow_state(nodes_data: list, edges_data: list, positions: dict) -> StreamlitFlowState:
@@ -365,6 +373,35 @@ def render_candidate_manager(diagram_type: str, mermaid_code: str, graph_data: d
             )
             st.success(f"Status changed to {next_status}.")
             st.rerun()
+
+    st.markdown("#### LLM Decision Note")
+    llm_prompt = st.text_area(
+        "Decision prompt",
+        value="Summarize rationale, impact range, and next action.",
+        height=90,
+        key=f"candidate_llm_prompt_{diagram_type.lower()}",
+    )
+    if st.button("Auto-Log Note (LLM/Fallback)", key=f"candidate_auto_log_{diagram_type.lower()}"):
+        assistant = get_diagram_assistant()
+        recent_events = repository.list_decision_events(selected_id)
+        draft = assistant.draft_note(
+            diagram=selected_diagram,
+            user_request=llm_prompt,
+            recent_events=recent_events,
+        )
+        repository.append_decision_event(
+            diagram_id=selected_id,
+            actor="assistant" if draft.get("source") == "llm" else "fallback",
+            stage="llm_note",
+            summary=str(draft.get("summary", "Decision note")),
+            markdown_comment=str(draft.get("markdown_comment", "")),
+            tags=list(draft.get("tags", [])),
+        )
+        if draft.get("source") == "llm":
+            st.success("Decision note logged from LLM output.")
+        else:
+            st.info("LLM unavailable. Markdown fallback note logged.")
+        st.rerun()
 
     note_summary = st.text_input(
         "Decision summary",
