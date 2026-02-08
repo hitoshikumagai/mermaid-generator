@@ -96,9 +96,9 @@ Every diagram type now uses a consistent Editor workflow.
 graph TD;
     start["Start"];
     process["Do work"];
-    end["Done"];
+    end_node["Done"];
     start --> process;
-    process --> end;
+    process --> end_node;
 ```
 
 ## Project Layout
@@ -120,6 +120,7 @@ graph TD;
 
 - If you plan to integrate a real LLM, enforce JSON-only output.
 - For more stable layouts, consider Graphviz if available.
+- Mermaid node IDs should avoid reserved tokens such as `end`.
 
 ## License
 
