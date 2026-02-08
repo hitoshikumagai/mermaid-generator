@@ -5,6 +5,7 @@ import urllib.request
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
+from .diagram_validator import MermaidDiagramValidator
 from .graph_logic import GraphData, build_mock_graph, build_structured_flow_graph
 from .mermaid_agent_roles import (
     MermaidActAgent,
@@ -348,12 +349,20 @@ class FlowchartOrchestrator:
 
 
 class MermaidDiagramOrchestrator:
-    def __init__(self, llm_client: Optional[OpenAIJSONClient] = None) -> None:
+    def __init__(
+        self,
+        llm_client: Optional[OpenAIJSONClient] = None,
+        diagram_validator: Optional[MermaidDiagramValidator] = None,
+    ) -> None:
         self.llm_client = llm_client or OpenAIJSONClient()
         self.observe_agent = MermaidObserveAgent()
         self.act_agent = MermaidActAgent(sanitize_mermaid_code)
         self.verify_agent = MermaidVerifyAgent(sanitize_mermaid_code)
         self.role_coordinator = MermaidRoleCoordinator(sanitize_mermaid_code)
+        self.diagram_validator = diagram_validator or MermaidDiagramValidator(
+            llm_client=self.llm_client,
+            enable_llm_assist=True,
+        )
         self.max_repair_attempts = 2
 
     def run_turn(
@@ -364,44 +373,65 @@ class MermaidDiagramOrchestrator:
         current_code: str,
         strict_llm: bool = False,
     ) -> MermaidTurn:
+        def finish(turn: MermaidTurn, allow_recovery: bool = True) -> MermaidTurn:
+            return self._finalize_turn(
+                diagram_type=diagram_type,
+                turn=turn,
+                user_message=user_message,
+                chat_history=chat_history,
+                current_code=current_code,
+                strict_llm=strict_llm,
+                allow_recovery=allow_recovery,
+            )
+
         observed = self.observe_agent.observe(user_message=user_message, current_code=current_code)
         ok, reason = observed.validate()
         if not ok:
             if strict_llm:
-                return MermaidTurn(
-                    assistant_message=f"LLM-only mode: invalid request ({reason}).",
-                    mermaid_code=current_code or _default_mermaid_template(diagram_type),
-                    source="llm_strict_blocked",
-                    phase="update" if bool((current_code or "").strip()) else "initial",
-                    change_summary="Request validation failed in LLM-only mode.",
+                return finish(
+                    MermaidTurn(
+                        assistant_message=f"LLM-only mode: invalid request ({reason}).",
+                        mermaid_code=current_code or _default_mermaid_template(diagram_type),
+                        source="llm_strict_blocked",
+                        phase="update" if bool((current_code or "").strip()) else "initial",
+                        change_summary="Request validation failed in LLM-only mode.",
+                    ),
+                    allow_recovery=False,
                 )
-            return self._run_fallback_with_roles(
-                diagram_type=diagram_type,
-                user_message=user_message or "create default diagram",
-                chat_history=chat_history,
-                current_code=current_code,
-                reason=f"observe invalid: {reason}",
+            return finish(
+                self._run_fallback_with_roles(
+                    diagram_type=diagram_type,
+                    user_message=user_message or "create default diagram",
+                    chat_history=chat_history,
+                    current_code=current_code,
+                    reason=f"observe invalid: {reason}",
+                )
             )
         has_code = observed.has_current_code
 
         if not self.llm_client.is_enabled():
             if strict_llm:
-                return MermaidTurn(
-                    assistant_message=(
-                        "LLM-only mode is enabled. OPENAI_API_KEY is not configured, "
-                        "so fallback generation is disabled."
+                return finish(
+                    MermaidTurn(
+                        assistant_message=(
+                            "LLM-only mode is enabled. OPENAI_API_KEY is not configured, "
+                            "so fallback generation is disabled."
+                        ),
+                        mermaid_code=current_code or _default_mermaid_template(diagram_type),
+                        source="llm_strict_blocked",
+                        phase="update" if has_code else "initial",
+                        change_summary="LLM unavailable in strict mode.",
                     ),
-                    mermaid_code=current_code or _default_mermaid_template(diagram_type),
-                    source="llm_strict_blocked",
-                    phase="update" if has_code else "initial",
-                    change_summary="LLM unavailable in strict mode.",
+                    allow_recovery=False,
                 )
-            return self._run_fallback_with_roles(
-                diagram_type=diagram_type,
-                user_message=observed.user_message,
-                chat_history=chat_history,
-                current_code=current_code,
-                reason="LLM disabled.",
+            return finish(
+                self._run_fallback_with_roles(
+                    diagram_type=diagram_type,
+                    user_message=observed.user_message,
+                    chat_history=chat_history,
+                    current_code=current_code,
+                    reason="LLM disabled.",
+                )
             )
 
         try:
@@ -415,21 +445,26 @@ class MermaidDiagramOrchestrator:
                     current_code=current_code,
                 )
                 if ok:
-                    return turn
+                    return finish(turn)
                 if strict_llm:
-                    return MermaidTurn(
-                        assistant_message=f"LLM-only mode rejected output at verify step: {reason}",
-                        mermaid_code=current_code or _default_mermaid_template(diagram_type),
-                        source="llm_strict_verify",
-                        phase="update",
-                        change_summary="LLM output failed verification in strict mode.",
+                    return finish(
+                        MermaidTurn(
+                            assistant_message=f"LLM-only mode rejected output at verify step: {reason}",
+                            mermaid_code=current_code or _default_mermaid_template(diagram_type),
+                            source="llm_strict_verify",
+                            phase="update",
+                            change_summary="LLM output failed verification in strict mode.",
+                        ),
+                        allow_recovery=False,
                     )
-                return self._run_fallback_with_roles(
-                    diagram_type=diagram_type,
-                    user_message=observed.user_message,
-                    chat_history=chat_history,
-                    current_code=current_code,
-                    reason=f"verify failed: {reason}",
+                return finish(
+                    self._run_fallback_with_roles(
+                        diagram_type=diagram_type,
+                        user_message=observed.user_message,
+                        chat_history=chat_history,
+                        current_code=current_code,
+                        reason=f"verify failed: {reason}",
+                    )
                 )
             turn = self._run_llm_initial(diagram_type, user_message, chat_history)
             turn, ok, reason = self._verify_or_repair_llm_turn(
@@ -440,38 +475,104 @@ class MermaidDiagramOrchestrator:
                 current_code="",
             )
             if ok:
-                return turn
+                return finish(turn)
             if strict_llm:
-                return MermaidTurn(
-                    assistant_message=f"LLM-only mode rejected initial output at verify step: {reason}",
-                    mermaid_code=current_code or _default_mermaid_template(diagram_type),
-                    source="llm_strict_verify",
-                    phase="initial",
-                    change_summary="Initial LLM output failed verification in strict mode.",
+                return finish(
+                    MermaidTurn(
+                        assistant_message=f"LLM-only mode rejected initial output at verify step: {reason}",
+                        mermaid_code=current_code or _default_mermaid_template(diagram_type),
+                        source="llm_strict_verify",
+                        phase="initial",
+                        change_summary="Initial LLM output failed verification in strict mode.",
+                    ),
+                    allow_recovery=False,
                 )
-            return self._run_fallback_with_roles(
-                diagram_type=diagram_type,
-                user_message=observed.user_message,
-                chat_history=chat_history,
-                current_code=current_code,
-                reason=f"verify failed: {reason}",
+            return finish(
+                self._run_fallback_with_roles(
+                    diagram_type=diagram_type,
+                    user_message=observed.user_message,
+                    chat_history=chat_history,
+                    current_code=current_code,
+                    reason=f"verify failed: {reason}",
+                )
             )
         except Exception as exc:
             if strict_llm:
-                return MermaidTurn(
-                    assistant_message=f"LLM-only mode blocked fallback after LLM error: {exc}",
-                    mermaid_code=current_code or _default_mermaid_template(diagram_type),
-                    source="llm_strict_error",
-                    phase="update" if has_code else "initial",
-                    change_summary="LLM failed and fallback is disabled in strict mode.",
+                return finish(
+                    MermaidTurn(
+                        assistant_message=f"LLM-only mode blocked fallback after LLM error: {exc}",
+                        mermaid_code=current_code or _default_mermaid_template(diagram_type),
+                        source="llm_strict_error",
+                        phase="update" if has_code else "initial",
+                        change_summary="LLM failed and fallback is disabled in strict mode.",
+                    ),
+                    allow_recovery=False,
                 )
-            return self._run_fallback_with_roles(
-                diagram_type=diagram_type,
-                user_message=observed.user_message,
-                chat_history=chat_history,
-                current_code=current_code,
-                reason=f"LLM call error: {exc}",
+            return finish(
+                self._run_fallback_with_roles(
+                    diagram_type=diagram_type,
+                    user_message=observed.user_message,
+                    chat_history=chat_history,
+                    current_code=current_code,
+                    reason=f"LLM call error: {exc}",
+                )
             )
+
+    def _finalize_turn(
+        self,
+        diagram_type: str,
+        turn: MermaidTurn,
+        user_message: str,
+        chat_history: List[ChatMessage],
+        current_code: str,
+        strict_llm: bool,
+        allow_recovery: bool,
+    ) -> MermaidTurn:
+        report = self.diagram_validator.validate_turn(
+            diagram_type=diagram_type,
+            candidate_code=turn.mermaid_code,
+            current_code=current_code,
+            user_message=user_message,
+        )
+        if report.valid:
+            return turn
+
+        reason = report.short_reason()
+        if strict_llm or not allow_recovery:
+            return MermaidTurn(
+                assistant_message=(
+                    f"{turn.assistant_message} Dedicated validator blocked completion: {reason}"
+                ),
+                mermaid_code=current_code or _default_mermaid_template(diagram_type),
+                source="llm_strict_validate" if strict_llm else turn.source,
+                phase="update" if bool((current_code or "").strip()) else "initial",
+                change_summary="Dedicated validator rejected output before completion.",
+            )
+
+        repaired = self._run_fallback_with_roles(
+            diagram_type=diagram_type,
+            user_message=user_message,
+            chat_history=chat_history,
+            current_code=current_code,
+            reason=f"dedicated validator failed: {reason}",
+        )
+        second = self.diagram_validator.validate_turn(
+            diagram_type=diagram_type,
+            candidate_code=repaired.mermaid_code,
+            current_code=current_code,
+            user_message=user_message,
+        )
+        if second.valid:
+            return repaired
+        return MermaidTurn(
+            assistant_message=(
+                f"{repaired.assistant_message} Dedicated validator still reports issues: {second.short_reason()}"
+            ),
+            mermaid_code=current_code or _default_mermaid_template(diagram_type),
+            source="fallback_validate_blocked",
+            phase="update" if bool((current_code or "").strip()) else "initial",
+            change_summary="Dedicated validator rejected both primary and fallback outputs.",
+        )
 
     def _run_fallback_with_roles(
         self,

@@ -1,4 +1,5 @@
 from src.mermaid_generator.graph_logic import build_mock_graph
+from src.mermaid_generator.diagram_validator import ValidationFinding, ValidationReport
 from src.mermaid_generator.orchestrator import (
     FlowchartOrchestrator,
     MermaidDiagramOrchestrator,
@@ -109,6 +110,40 @@ class MermaidRepairStubClient:
             "change_summary": "Created first diagram.",
             "mermaid_code": "sequenceDiagram\n    invalid line\n",
         }
+
+
+class CountingValidator:
+    def __init__(self):
+        self.calls = []
+
+    def validate_turn(self, diagram_type, candidate_code, current_code, user_message):
+        self.calls.append(
+            {
+                "diagram_type": diagram_type,
+                "candidate_code": candidate_code,
+                "current_code": current_code,
+                "user_message": user_message,
+            }
+        )
+        return ValidationReport(source="stub", findings=[])
+
+
+class FailingThenPassingValidator:
+    def __init__(self):
+        self.calls = 0
+
+    def validate_turn(self, diagram_type, candidate_code, current_code, user_message):
+        _ = diagram_type
+        _ = candidate_code
+        _ = current_code
+        _ = user_message
+        self.calls += 1
+        if self.calls == 1:
+            return ValidationReport(
+                source="stub",
+                findings=[ValidationFinding("error", "forced_failure", "forced failure")],
+            )
+        return ValidationReport(source="stub", findings=[])
 
 
 def test_compute_impact_range_detects_changes():
@@ -263,6 +298,41 @@ def test_mermaid_strict_llm_blocks_fallback_when_llm_disabled():
     assert turn.source == "llm_strict_blocked"
     assert "sequenceDiagram" in turn.mermaid_code
     assert "LLM-only mode" in turn.assistant_message
+
+
+def test_mermaid_orchestrator_always_calls_dedicated_validator_before_return():
+    validator = CountingValidator()
+    orchestrator = MermaidDiagramOrchestrator(
+        llm_client=DisabledClient(),
+        diagram_validator=validator,
+    )
+    turn = orchestrator.run_turn(
+        diagram_type="Sequence",
+        user_message="create api sequence",
+        chat_history=[],
+        current_code="",
+    )
+
+    assert turn.mermaid_code.startswith("sequenceDiagram")
+    assert len(validator.calls) == 1
+
+
+def test_mermaid_orchestrator_recovers_with_fallback_when_dedicated_validator_fails():
+    validator = FailingThenPassingValidator()
+    orchestrator = MermaidDiagramOrchestrator(
+        llm_client=MermaidEnabledStubClient(),
+        diagram_validator=validator,
+    )
+    turn = orchestrator.run_turn(
+        diagram_type="Sequence",
+        user_message="add response step",
+        chat_history=[{"role": "user", "content": "initial"}],
+        current_code="sequenceDiagram\n    participant C as Client\n",
+    )
+
+    assert validator.calls >= 2
+    assert turn.source == "fallback"
+    assert turn.mermaid_code.startswith("sequenceDiagram")
 
 
 def test_mermaid_llm_update_uses_update_path():
