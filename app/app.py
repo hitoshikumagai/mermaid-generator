@@ -40,6 +40,13 @@ from src.mermaid_generator.ui_mapper import (  # noqa: E402
     to_flow_edge_specs,
     to_flow_node_specs,
 )
+from src.mermaid_generator.property_editor import (  # noqa: E402
+    apply_edge_properties,
+    apply_node_properties,
+    parse_edge_properties,
+    parse_node_properties,
+    upsert_class_subclass_relation,
+)
 
 
 @st.cache_resource
@@ -273,6 +280,197 @@ def run_mermaid_agent_turn(diagram_type: str, user_message: str) -> None:
         "source": turn.source,
         "message": turn.change_summary,
     }
+
+
+def render_property_panel(diagram_type: str, graph_data: dict) -> dict:
+    st.markdown("### Properties")
+    if diagram_type not in {"Class", "ER", "State", "Sequence"}:
+        st.caption("Type-specific property panel will be expanded in a follow-up issue.")
+        return graph_data
+
+    nodes = graph_data.get("nodes", [])
+    edges = graph_data.get("edges", [])
+    if not nodes:
+        st.caption("No nodes available.")
+        return graph_data
+
+    node_options = [node["id"] for node in nodes]
+    selected_node_id = st.selectbox(
+        "Node",
+        node_options,
+        key=f"prop_node_{diagram_type.lower()}",
+    )
+    selected_node = next(node for node in nodes if node["id"] == selected_node_id)
+    node_props = parse_node_properties(diagram_type, selected_node["id"], selected_node.get("label", ""))
+    updated_graph = graph_data
+
+    if diagram_type == "Class":
+        node_name = st.text_input(
+            "Class Name", value=node_props.get("name", ""), key=f"class_name_{diagram_type}_{selected_node_id}"
+        )
+        node_attrs = st.text_input(
+            "Attributes",
+            value=node_props.get("attributes", ""),
+            key=f"class_attrs_{diagram_type}_{selected_node_id}",
+        )
+        node_methods = st.text_input(
+            "Methods",
+            value=node_props.get("methods", ""),
+            key=f"class_methods_{diagram_type}_{selected_node_id}",
+        )
+        if st.button("Apply Node Properties", key=f"apply_node_props_{diagram_type}_{selected_node_id}"):
+            updated_graph = apply_node_properties(
+                diagram_type,
+                updated_graph,
+                selected_node_id,
+                {"name": node_name, "attributes": node_attrs, "methods": node_methods},
+            )
+
+        st.markdown("#### Subclass Relation")
+        child_id = st.selectbox("Child Class", node_options, key=f"sub_child_{diagram_type}")
+        parent_candidates = [node_id for node_id in node_options if node_id != child_id]
+        if parent_candidates:
+            parent_id = st.selectbox("Parent Class", parent_candidates, key=f"sub_parent_{diagram_type}")
+            if st.button("Apply Subclass", key=f"apply_subclass_{diagram_type}"):
+                updated_graph = upsert_class_subclass_relation(updated_graph, child_id, parent_id)
+        else:
+            st.caption("Add at least two classes to define subclass relation.")
+
+    if diagram_type == "ER":
+        er_name = st.text_input(
+            "Entity Name", value=node_props.get("name", ""), key=f"er_name_{diagram_type}_{selected_node_id}"
+        )
+        er_pk = st.text_input(
+            "Primary Key", value=node_props.get("primary_key", ""), key=f"er_pk_{diagram_type}_{selected_node_id}"
+        )
+        er_fk = st.text_input(
+            "Foreign Key", value=node_props.get("foreign_key", ""), key=f"er_fk_{diagram_type}_{selected_node_id}"
+        )
+        if st.button("Apply Node Properties", key=f"apply_node_props_{diagram_type}_{selected_node_id}"):
+            updated_graph = apply_node_properties(
+                diagram_type,
+                updated_graph,
+                selected_node_id,
+                {"name": er_name, "primary_key": er_pk, "foreign_key": er_fk},
+            )
+
+    if diagram_type == "State":
+        state_name = st.text_input(
+            "State Name", value=node_props.get("name", ""), key=f"state_name_{diagram_type}_{selected_node_id}"
+        )
+        if st.button("Apply Node Properties", key=f"apply_node_props_{diagram_type}_{selected_node_id}"):
+            updated_graph = apply_node_properties(
+                diagram_type, updated_graph, selected_node_id, {"name": state_name}
+            )
+
+    if diagram_type == "Sequence":
+        alias = st.text_input(
+            "Participant Alias", value=node_props.get("alias", ""), key=f"seq_alias_{diagram_type}_{selected_node_id}"
+        )
+        if st.button("Apply Node Properties", key=f"apply_node_props_{diagram_type}_{selected_node_id}"):
+            updated_graph = apply_node_properties(
+                diagram_type, updated_graph, selected_node_id, {"alias": alias}
+            )
+
+    if edges:
+        st.markdown("#### Edge Properties")
+        edge_options = [edge["id"] for edge in edges]
+        selected_edge_id = st.selectbox(
+            "Edge",
+            edge_options,
+            key=f"prop_edge_{diagram_type.lower()}",
+        )
+        selected_edge = next(edge for edge in edges if edge["id"] == selected_edge_id)
+        edge_props = parse_edge_properties(diagram_type, selected_edge.get("label", ""))
+
+        if diagram_type == "Class":
+            relation_type = st.selectbox(
+                "Relation Type",
+                ["association", "extends", "implements", "composition", "aggregation"],
+                index=["association", "extends", "implements", "composition", "aggregation"].index(
+                    edge_props.get("relation_type", "association")
+                )
+                if edge_props.get("relation_type", "association")
+                in {"association", "extends", "implements", "composition", "aggregation"}
+                else 0,
+                key=f"class_relation_type_{diagram_type}_{selected_edge_id}",
+            )
+            relation_text = st.text_input(
+                "Relation Label",
+                value=edge_props.get("relation", ""),
+                key=f"class_relation_text_{diagram_type}_{selected_edge_id}",
+            )
+            if st.button("Apply Edge Properties", key=f"apply_edge_props_{diagram_type}_{selected_edge_id}"):
+                updated_graph = apply_edge_properties(
+                    diagram_type,
+                    updated_graph,
+                    selected_edge_id,
+                    {"relation_type": relation_type, "relation": relation_text},
+                )
+
+        if diagram_type == "ER":
+            card_options = ["1-1", "1-N", "N-1", "N-N"]
+            cardinality = st.selectbox(
+                "Cardinality",
+                card_options,
+                index=card_options.index(edge_props.get("cardinality"))
+                if edge_props.get("cardinality") in card_options
+                else 0,
+                key=f"er_cardinality_{diagram_type}_{selected_edge_id}",
+            )
+            relation = st.text_input(
+                "Relation",
+                value=edge_props.get("relation", ""),
+                key=f"er_relation_{diagram_type}_{selected_edge_id}",
+            )
+            if st.button("Apply Edge Properties", key=f"apply_edge_props_{diagram_type}_{selected_edge_id}"):
+                updated_graph = apply_edge_properties(
+                    diagram_type,
+                    updated_graph,
+                    selected_edge_id,
+                    {"cardinality": cardinality, "relation": relation},
+                )
+
+        if diagram_type == "State":
+            event = st.text_input(
+                "Event",
+                value=edge_props.get("event", ""),
+                key=f"state_event_{diagram_type}_{selected_edge_id}",
+            )
+            guard = st.text_input(
+                "Guard",
+                value=edge_props.get("guard", ""),
+                key=f"state_guard_{diagram_type}_{selected_edge_id}",
+            )
+            if st.button("Apply Edge Properties", key=f"apply_edge_props_{diagram_type}_{selected_edge_id}"):
+                updated_graph = apply_edge_properties(
+                    diagram_type, updated_graph, selected_edge_id, {"event": event, "guard": guard}
+                )
+
+        if diagram_type == "Sequence":
+            msg_options = ["sync", "async", "return"]
+            message_type = st.selectbox(
+                "Message Type",
+                msg_options,
+                index=msg_options.index(edge_props.get("message_type"))
+                if edge_props.get("message_type") in msg_options
+                else 0,
+                key=f"seq_msg_type_{diagram_type}_{selected_edge_id}",
+            )
+            message = st.text_input(
+                "Message",
+                value=edge_props.get("message", ""),
+                key=f"seq_msg_{diagram_type}_{selected_edge_id}",
+            )
+            if st.button("Apply Edge Properties", key=f"apply_edge_props_{diagram_type}_{selected_edge_id}"):
+                updated_graph = apply_edge_properties(
+                    diagram_type,
+                    updated_graph,
+                    selected_edge_id,
+                    {"message_type": message_type, "message": message},
+                )
+
+    return updated_graph
 
 
 def render_impact_summary(impact: dict) -> None:
@@ -518,6 +716,12 @@ else:
             mime="text/plain",
             use_container_width=True,
         )
+        updated_graph = render_property_panel(diagram_type, current_graph)
+        if updated_graph != current_graph:
+            set_canvas_graph(diagram_type, updated_graph)
+            updated_code = graph_to_mermaid(diagram_type, updated_graph)
+            set_mermaid_code(diagram_type, updated_code)
+            st.rerun()
         if capabilities["chat"]:
             agent_state = st.session_state.mermaid_agent_state_by_type.get(
                 diagram_type, {"phase": "initial", "source": "fallback", "message": ""}
