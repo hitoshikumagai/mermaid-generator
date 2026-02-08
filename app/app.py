@@ -875,17 +875,17 @@ def render_mermaid_preview(mermaid_code: str, height: int = 520) -> None:
   <div id="render_error" style="color:#b91c1c;font-family:monospace;"></div>
 </div>
 <script>
-  function formatMermaidError(err) {
+  function formatMermaidError(err) {{
     if (!err) return "unknown error";
     if (typeof err === "string") return err;
     if (err.message) return err.message;
     if (err.str) return err.str;
-    try {
+    try {{
       return JSON.stringify(err, null, 2);
-    } catch (_) {
+    }} catch (_) {{
       return String(err);
-    }
-  }
+    }}
+  }}
 
   function renderMermaid() {{
     try {{
