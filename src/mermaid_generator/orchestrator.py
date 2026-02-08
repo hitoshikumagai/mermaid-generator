@@ -6,7 +6,12 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 from .graph_logic import GraphData, build_mock_graph
-from .mermaid_agent_roles import MermaidActAgent, MermaidObserveAgent, MermaidVerifyAgent
+from .mermaid_agent_roles import (
+    MermaidActAgent,
+    MermaidObserveAgent,
+    MermaidRoleCoordinator,
+    MermaidVerifyAgent,
+)
 from .templates import get_mermaid_template, list_mermaid_templates
 
 ChatMessage = Dict[str, str]
@@ -316,6 +321,7 @@ class MermaidDiagramOrchestrator:
         self.observe_agent = MermaidObserveAgent()
         self.act_agent = MermaidActAgent(sanitize_mermaid_code)
         self.verify_agent = MermaidVerifyAgent(sanitize_mermaid_code)
+        self.role_coordinator = MermaidRoleCoordinator(sanitize_mermaid_code)
 
     def run_turn(
         self,
@@ -328,14 +334,13 @@ class MermaidDiagramOrchestrator:
         has_code = observed.has_current_code
 
         if not self.llm_client.is_enabled():
-            if has_code:
-                return self._run_fallback_update(
-                    diagram_type,
-                    user_message=observed.user_message,
-                    current_code=current_code,
-                    reason="LLM disabled.",
-                )
-            return self._run_fallback_initial(diagram_type, user_message=observed.user_message)
+            return self._run_fallback_with_roles(
+                diagram_type=diagram_type,
+                user_message=observed.user_message,
+                chat_history=chat_history,
+                current_code=current_code,
+                reason="LLM disabled.",
+            )
 
         try:
             if has_code:
@@ -343,9 +348,10 @@ class MermaidDiagramOrchestrator:
                 ok, reason = self.verify_agent.verify(diagram_type, turn.mermaid_code, current_code, user_message)
                 if ok:
                     return turn
-                return self._run_fallback_update(
-                    diagram_type,
+                return self._run_fallback_with_roles(
+                    diagram_type=diagram_type,
                     user_message=observed.user_message,
+                    chat_history=chat_history,
                     current_code=current_code,
                     reason=f"verify failed: {reason}",
                 )
@@ -353,26 +359,45 @@ class MermaidDiagramOrchestrator:
             ok, reason = self.verify_agent.verify(diagram_type, turn.mermaid_code, "", user_message)
             if ok:
                 return turn
-            return self._run_fallback_initial(
-                diagram_type,
+            return self._run_fallback_with_roles(
+                diagram_type=diagram_type,
                 user_message=observed.user_message,
+                chat_history=chat_history,
+                current_code=current_code,
                 reason=f"verify failed: {reason}",
             )
         except Exception as exc:
-            if has_code:
-                fallback = self._run_fallback_update(
-                    diagram_type,
-                    user_message=observed.user_message,
-                    current_code=current_code,
-                    reason=f"LLM call error: {exc}",
-                )
-            else:
-                fallback = self._run_fallback_initial(
-                    diagram_type,
-                    user_message=observed.user_message,
-                    reason=f"LLM call error: {exc}",
-                )
-            return fallback
+            return self._run_fallback_with_roles(
+                diagram_type=diagram_type,
+                user_message=observed.user_message,
+                chat_history=chat_history,
+                current_code=current_code,
+                reason=f"LLM call error: {exc}",
+            )
+
+    def _run_fallback_with_roles(
+        self,
+        diagram_type: str,
+        user_message: str,
+        chat_history: List[ChatMessage],
+        current_code: str,
+        reason: str,
+    ) -> MermaidTurn:
+        result = self.role_coordinator.run(
+            diagram_type=diagram_type,
+            user_message=user_message,
+            chat_history=chat_history,
+            current_code=current_code,
+            default_template_code=_default_mermaid_template(diagram_type),
+        )
+        suffix = f" ({reason})" if reason else ""
+        return MermaidTurn(
+            assistant_message=f"{result.summary}{suffix}",
+            mermaid_code=result.mermaid_code,
+            source="fallback",
+            phase="update" if bool((current_code or "").strip()) else "initial",
+            change_summary=f"{result.summary}{suffix}",
+        )
 
     def _run_llm_initial(
         self,
@@ -675,4 +700,3 @@ def _default_mermaid_template(diagram_type: str) -> str:
     if templates:
         return sanitize_mermaid_code(diagram_type, get_mermaid_template(diagram_type, templates[0]["id"]))
     return sanitize_mermaid_code(diagram_type, MERMAID_HEADERS.get(diagram_type, "graph TD"))
-
