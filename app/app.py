@@ -16,6 +16,10 @@ from src.mermaid_generator.graph_logic import (  # noqa: E402
     calculate_layout_positions,
     export_to_mermaid,
 )
+from src.mermaid_generator.canvas_graph import (  # noqa: E402
+    graph_to_mermaid,
+    parse_mermaid_to_graph,
+)
 from src.mermaid_generator.orchestrator import (  # noqa: E402
     FlowchartOrchestrator,
     MermaidDiagramOrchestrator,
@@ -48,16 +52,78 @@ def get_mermaid_orchestrator() -> MermaidDiagramOrchestrator:
     return MermaidDiagramOrchestrator()
 
 
-def mermaid_editor_key(diagram_type: str) -> str:
-    return f"mermaid_editor_{diagram_type.lower()}"
-
-
 def to_flow_state(nodes_data: list, edges_data: list, positions: dict) -> StreamlitFlowState:
     node_specs = to_flow_node_specs(nodes_data, positions, edges_data)
     edge_specs = to_flow_edge_specs(edges_data, positions)
     flow_nodes = [StreamlitFlowNode(**spec) for spec in node_specs]
     flow_edges = [StreamlitFlowEdge(**spec) for spec in edge_specs]
     return StreamlitFlowState(nodes=flow_nodes, edges=flow_edges)
+
+
+def coerce_flow_state(state_obj: object) -> StreamlitFlowState:
+    if isinstance(state_obj, StreamlitFlowState):
+        return state_obj
+
+    if isinstance(state_obj, dict):
+        raw_nodes = state_obj.get("nodes", [])
+        raw_edges = state_obj.get("edges", [])
+    else:
+        raw_nodes = getattr(state_obj, "nodes", [])
+        raw_edges = getattr(state_obj, "edges", [])
+
+    nodes = []
+    for raw in raw_nodes or []:
+        if isinstance(raw, StreamlitFlowNode):
+            nodes.append(raw)
+            continue
+        if isinstance(raw, dict):
+            try:
+                nodes.append(StreamlitFlowNode.from_dict(raw))
+                continue
+            except Exception:
+                node_id = str(raw.get("id", "")).strip() or f"node_{len(nodes)+1}"
+                node_type = str(raw.get("node_type", raw.get("type", "default")) or "default")
+                pos = raw.get("pos", raw.get("position", (0.0, 0.0)))
+                if isinstance(pos, dict):
+                    x = float(pos.get("x", 0.0))
+                    y = float(pos.get("y", 0.0))
+                else:
+                    x = float(pos[0]) if len(pos) > 0 else 0.0
+                    y = float(pos[1]) if len(pos) > 1 else 0.0
+                data = raw.get("data", {"content": raw.get("label", node_id)})
+                nodes.append(
+                    StreamlitFlowNode(
+                        id=node_id,
+                        pos=(x, y),
+                        data=data if isinstance(data, dict) else {"content": str(data)},
+                        node_type=node_type if node_type in {"input", "default", "output"} else "default",
+                    )
+                )
+
+    edges = []
+    for raw in raw_edges or []:
+        if isinstance(raw, StreamlitFlowEdge):
+            edges.append(raw)
+            continue
+        if isinstance(raw, dict):
+            try:
+                edges.append(StreamlitFlowEdge.from_dict(raw))
+                continue
+            except Exception:
+                edge_id = str(raw.get("id", "")).strip() or f"e{len(edges)+1}"
+                source = str(raw.get("source", "")).strip()
+                target = str(raw.get("target", "")).strip()
+                if source and target:
+                    edges.append(
+                        StreamlitFlowEdge(
+                            id=edge_id,
+                            source=source,
+                            target=target,
+                            label=str(raw.get("label", "") or ""),
+                        )
+                    )
+
+    return StreamlitFlowState(nodes=nodes, edges=edges)
 
 
 def ensure_state() -> None:
@@ -88,10 +154,14 @@ def ensure_state() -> None:
         st.session_state.mermaid_chat_history_by_type = {}
     if "mermaid_agent_state_by_type" not in st.session_state:
         st.session_state.mermaid_agent_state_by_type = {}
+    if "canvas_graph_by_type" not in st.session_state:
+        st.session_state.canvas_graph_by_type = {}
     if "edit_mode_by_type" not in st.session_state:
         st.session_state.edit_mode_by_type = {}
     if "default_template_loaded" not in st.session_state:
         st.session_state.default_template_loaded = False
+
+    st.session_state.flow_state = coerce_flow_state(st.session_state.flow_state)
 
     for diagram_type in DIAGRAM_TYPES:
         if diagram_type != "Flowchart":
@@ -111,9 +181,10 @@ def ensure_state() -> None:
                     )
                 else:
                     st.session_state.mermaid_code_by_type[diagram_type] = ""
-            editor_key = mermaid_editor_key(diagram_type)
-            if editor_key not in st.session_state:
-                st.session_state[editor_key] = st.session_state.mermaid_code_by_type[diagram_type]
+            if diagram_type not in st.session_state.canvas_graph_by_type:
+                st.session_state.canvas_graph_by_type[diagram_type] = parse_mermaid_to_graph(
+                    diagram_type, st.session_state.mermaid_code_by_type[diagram_type]
+                )
         if diagram_type not in st.session_state.edit_mode_by_type:
             st.session_state.edit_mode_by_type[diagram_type] = (
                 "Orchestration" if diagram_type == "Flowchart" else "Manual"
@@ -126,8 +197,7 @@ def get_mermaid_code(diagram_type: str) -> str:
 
 def set_mermaid_code(diagram_type: str, code: str, sync_editor: bool = False) -> None:
     st.session_state.mermaid_code_by_type[diagram_type] = code
-    if sync_editor:
-        st.session_state[mermaid_editor_key(diagram_type)] = code
+    _ = sync_editor  # reserved for compatibility
 
 
 def apply_graph_data(graph_data: dict, impact_message: str) -> None:
@@ -152,6 +222,14 @@ def apply_flowchart_template(template_id: str) -> None:
     template = get_flowchart_template(template_id)
     st.session_state.scope_summary = f"Template: {template['name']} - {template['description']}"
     apply_graph_data(template["graph"], f"Template loaded: {template['name']}")
+
+
+def get_canvas_graph(diagram_type: str) -> dict:
+    return st.session_state.canvas_graph_by_type.get(diagram_type, {"nodes": [], "edges": []})
+
+
+def set_canvas_graph(diagram_type: str, graph_data: dict) -> None:
+    st.session_state.canvas_graph_by_type[diagram_type] = graph_data
 
 
 def run_agent_turn(user_message: str) -> None:
@@ -189,6 +267,7 @@ def run_mermaid_agent_turn(diagram_type: str, user_message: str) -> None:
     )
     history.append({"role": "assistant", "content": turn.assistant_message})
     set_mermaid_code(diagram_type, turn.mermaid_code, sync_editor=True)
+    set_canvas_graph(diagram_type, parse_mermaid_to_graph(diagram_type, turn.mermaid_code))
     st.session_state.mermaid_agent_state_by_type[diagram_type] = {
         "phase": turn.phase,
         "source": turn.source,
@@ -317,11 +396,13 @@ with st.sidebar:
             )
             st.caption(lookup[selected_mermaid_id]["description"])
             if st.button("Load Mermaid Template", use_container_width=True):
+                template_code = get_mermaid_template(diagram_type, selected_mermaid_id)
                 set_mermaid_code(
                     diagram_type,
-                    get_mermaid_template(diagram_type, selected_mermaid_id),
+                    template_code,
                     sync_editor=True,
                 )
+                set_canvas_graph(diagram_type, parse_mermaid_to_graph(diagram_type, template_code))
         else:
             st.info("No predefined templates for this diagram type yet.")
 
@@ -334,7 +415,7 @@ with st.sidebar:
             st.write(f"`source`: {agent_state.get('source', 'fallback')}")
             st.caption(agent_state.get("message", ""))
         else:
-            st.caption("Manual mode: edit Mermaid code directly.")
+            st.caption("Manual mode: drag and edit nodes directly in the canvas.")
 
 if st.session_state.diagram_type == "Flowchart":
     if selected_mode == "Orchestration":
@@ -356,7 +437,7 @@ if st.session_state.diagram_type == "Flowchart":
 
     curr_state = streamlit_flow(
         "flow",
-        st.session_state.flow_state,
+        coerce_flow_state(st.session_state.flow_state),
         fit_view=True,
         height=520,
     )
@@ -406,18 +487,20 @@ else:
 
     st.subheader(f"{diagram_type} Editor")
     st.caption("Shared editor surface: edit, preview, export.")
-    current_code = get_mermaid_code(diagram_type)
-    editor_key = mermaid_editor_key(diagram_type)
-    if st.session_state.get(editor_key, "") != current_code:
-        st.session_state[editor_key] = current_code
-    edited_code = st.text_area(
-        "Mermaid Code",
-        key=editor_key,
-        height=420,
+    graph_data = get_canvas_graph(diagram_type)
+    positions = calculate_layout_positions(graph_data["nodes"], graph_data["edges"])
+    flow_state = to_flow_state(graph_data["nodes"], graph_data["edges"], positions)
+    curr_state = streamlit_flow(
+        f"flow_{diagram_type.lower()}",
+        flow_state,
+        fit_view=True,
+        height=520,
     )
-    if edited_code != current_code:
-        set_mermaid_code(diagram_type, edited_code)
-    code = get_mermaid_code(diagram_type)
+    current_nodes, current_edges = flow_items_to_graph_data(curr_state.nodes, curr_state.edges)
+    current_graph = {"nodes": current_nodes, "edges": current_edges}
+    set_canvas_graph(diagram_type, current_graph)
+    code = graph_to_mermaid(diagram_type, current_graph)
+    set_mermaid_code(diagram_type, code)
 
     col1, col2 = st.columns(2)
     with col1:
