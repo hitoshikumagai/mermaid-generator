@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 from .graph_logic import GraphData, build_mock_graph
+from .mermaid_agent_roles import MermaidActAgent, MermaidObserveAgent, MermaidVerifyAgent
 from .templates import get_mermaid_template, list_mermaid_templates
 
 ChatMessage = Dict[str, str]
@@ -312,6 +313,9 @@ class FlowchartOrchestrator:
 class MermaidDiagramOrchestrator:
     def __init__(self, llm_client: Optional[OpenAIJSONClient] = None) -> None:
         self.llm_client = llm_client or OpenAIJSONClient()
+        self.observe_agent = MermaidObserveAgent()
+        self.act_agent = MermaidActAgent(sanitize_mermaid_code)
+        self.verify_agent = MermaidVerifyAgent(sanitize_mermaid_code)
 
     def run_turn(
         self,
@@ -320,24 +324,54 @@ class MermaidDiagramOrchestrator:
         chat_history: List[ChatMessage],
         current_code: str,
     ) -> MermaidTurn:
-        has_code = bool((current_code or "").strip())
+        observed = self.observe_agent.observe(user_message=user_message, current_code=current_code)
+        has_code = observed.has_current_code
 
         if not self.llm_client.is_enabled():
             if has_code:
-                return self._run_fallback_update(diagram_type, current_code)
-            return self._run_fallback_initial(diagram_type)
+                return self._run_fallback_update(
+                    diagram_type,
+                    user_message=observed.user_message,
+                    current_code=current_code,
+                    reason="LLM disabled.",
+                )
+            return self._run_fallback_initial(diagram_type, user_message=observed.user_message)
 
         try:
             if has_code:
-                return self._run_llm_update(diagram_type, user_message, chat_history, current_code)
-            return self._run_llm_initial(diagram_type, user_message, chat_history)
+                turn = self._run_llm_update(diagram_type, user_message, chat_history, current_code)
+                ok, reason = self.verify_agent.verify(diagram_type, turn.mermaid_code, current_code, user_message)
+                if ok:
+                    return turn
+                return self._run_fallback_update(
+                    diagram_type,
+                    user_message=observed.user_message,
+                    current_code=current_code,
+                    reason=f"verify failed: {reason}",
+                )
+            turn = self._run_llm_initial(diagram_type, user_message, chat_history)
+            ok, reason = self.verify_agent.verify(diagram_type, turn.mermaid_code, "", user_message)
+            if ok:
+                return turn
+            return self._run_fallback_initial(
+                diagram_type,
+                user_message=observed.user_message,
+                reason=f"verify failed: {reason}",
+            )
         except Exception as exc:
             if has_code:
-                fallback = self._run_fallback_update(diagram_type, current_code)
+                fallback = self._run_fallback_update(
+                    diagram_type,
+                    user_message=observed.user_message,
+                    current_code=current_code,
+                    reason=f"LLM call error: {exc}",
+                )
             else:
-                fallback = self._run_fallback_initial(diagram_type)
-            fallback.assistant_message = f"LLM call failed, switched to fallback mode: {exc}"
-            fallback.source = "fallback"
+                fallback = self._run_fallback_initial(
+                    diagram_type,
+                    user_message=observed.user_message,
+                    reason=f"LLM call error: {exc}",
+                )
             return fallback
 
     def _run_llm_initial(
@@ -413,23 +447,51 @@ class MermaidDiagramOrchestrator:
             or "Diagram updated.",
         )
 
-    def _run_fallback_initial(self, diagram_type: str) -> MermaidTurn:
-        fallback_code = _default_mermaid_template(diagram_type)
+    def _run_fallback_initial(
+        self,
+        diagram_type: str,
+        user_message: str,
+        reason: str = "",
+    ) -> MermaidTurn:
+        fallback_code = self.act_agent.fallback_code(
+            diagram_type=diagram_type,
+            user_message=user_message,
+            current_code="",
+            append=False,
+            default_template_code=_default_mermaid_template(diagram_type),
+        )
+        if not fallback_code.strip():
+            fallback_code = _default_mermaid_template(diagram_type)
+        reason_suffix = f" ({reason})" if reason else ""
         return MermaidTurn(
-            assistant_message="Loaded a baseline template. Add details in Orchestration or Manual mode.",
+            assistant_message=f"Generated draft in fallback mode using request text{reason_suffix}",
             mermaid_code=fallback_code,
             source="fallback",
             phase="initial",
-            change_summary="Baseline template loaded.",
+            change_summary=f"Fallback initial draft generated{reason_suffix}.",
         )
 
-    def _run_fallback_update(self, diagram_type: str, current_code: str) -> MermaidTurn:
+    def _run_fallback_update(
+        self,
+        diagram_type: str,
+        user_message: str,
+        current_code: str,
+        reason: str = "",
+    ) -> MermaidTurn:
+        next_code = self.act_agent.fallback_code(
+            diagram_type=diagram_type,
+            user_message=user_message,
+            current_code=current_code,
+            append=True,
+            default_template_code=_default_mermaid_template(diagram_type),
+        )
+        reason_suffix = f" ({reason})" if reason else ""
         return MermaidTurn(
-            assistant_message="LLM is disabled. Kept current code; switch to Manual mode for direct edits.",
-            mermaid_code=sanitize_mermaid_code(diagram_type, current_code),
+            assistant_message=f"Switched to fallback update after verify/check{reason_suffix}.",
+            mermaid_code=next_code,
             source="fallback",
             phase="update",
-            change_summary="No automatic update applied in fallback mode.",
+            change_summary=f"Fallback update applied with observe-act-verify cycle{reason_suffix}.",
         )
 
 
@@ -613,3 +675,4 @@ def _default_mermaid_template(diagram_type: str) -> str:
     if templates:
         return sanitize_mermaid_code(diagram_type, get_mermaid_template(diagram_type, templates[0]["id"]))
     return sanitize_mermaid_code(diagram_type, MERMAID_HEADERS.get(diagram_type, "graph TD"))
+

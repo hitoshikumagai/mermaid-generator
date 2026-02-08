@@ -70,6 +70,21 @@ class MermaidEnabledStubClient:
         }
 
 
+class MermaidNoChangeStubClient:
+    def is_enabled(self) -> bool:
+        return True
+
+    def complete_json(self, system_prompt, user_prompt, temperature=0.2):
+        _ = system_prompt
+        _ = user_prompt
+        _ = temperature
+        return {
+            "assistant_message": "No change.",
+            "change_summary": "No visible update.",
+            "mermaid_code": "sequenceDiagram\n    participant C as Client\n",
+        }
+
+
 def test_compute_impact_range_detects_changes():
     prev_graph = {
         "nodes": [
@@ -168,6 +183,41 @@ def test_mermaid_llm_update_uses_update_path():
     assert turn.phase == "update"
     assert "A-->>C: response" in turn.mermaid_code
     assert "payment response path" in turn.change_summary
+
+
+def test_mermaid_fallback_update_builds_from_prose_instruction():
+    orchestrator = MermaidDiagramOrchestrator(llm_client=DisabledClient())
+    turn = orchestrator.run_turn(
+        diagram_type="Sequence",
+        user_message=(
+            "メール処理の手順: 受信メールを確認。2分で返信可能なら返信。"
+            "難しければタスク化して処理。完了後にアーカイブ。"
+        ),
+        chat_history=[],
+        current_code="sequenceDiagram\n    participant C as Client\n",
+    )
+
+    assert turn.source == "fallback"
+    assert turn.phase == "update"
+    assert "A-->>C: response" not in turn.mermaid_code
+    assert turn.mermaid_code.count("->>") >= 2
+    assert "メール処理" in turn.mermaid_code
+
+
+def test_mermaid_llm_no_change_triggers_verify_fallback():
+    orchestrator = MermaidDiagramOrchestrator(llm_client=MermaidNoChangeStubClient())
+    current_code = "sequenceDiagram\n    participant C as Client\n"
+    turn = orchestrator.run_turn(
+        diagram_type="Sequence",
+        user_message="add triage and archive steps",
+        chat_history=[{"role": "user", "content": "initial"}],
+        current_code=current_code,
+    )
+
+    assert turn.source == "fallback"
+    assert turn.phase == "update"
+    assert turn.mermaid_code != current_code
+    assert "verify" in turn.assistant_message.lower()
 
 
 def test_sanitize_mermaid_code_strips_fence_and_adds_header():

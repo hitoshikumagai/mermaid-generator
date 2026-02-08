@@ -57,6 +57,11 @@ from src.mermaid_generator.diagram_management_assistant import (  # noqa: E402
 from src.mermaid_generator.parent_class_assistant import (  # noqa: E402
     ParentClassAssistant,
 )
+from src.mermaid_generator.session_memory import (  # noqa: E402
+    append_template_memory,
+    build_memory_context,
+    should_reset_conversation,
+)
 
 
 @st.cache_resource
@@ -192,6 +197,8 @@ def ensure_state() -> None:
         st.session_state.edit_mode_by_type = {}
     if "default_template_loaded" not in st.session_state:
         st.session_state.default_template_loaded = False
+    if "session_memory_by_type" not in st.session_state:
+        st.session_state.session_memory_by_type = {}
 
     st.session_state.flow_state = coerce_flow_state(st.session_state.flow_state)
 
@@ -254,6 +261,50 @@ def apply_flowchart_template(template_id: str) -> None:
     template = get_flowchart_template(template_id)
     st.session_state.scope_summary = f"Template: {template['name']} - {template['description']}"
     apply_graph_data(template["graph"], f"Template loaded: {template['name']}")
+
+
+def append_template_session_memory(
+    diagram_type: str,
+    template_id: str,
+    template_name: str,
+    template_description: str,
+    bootstrap: bool = False,
+) -> None:
+    append_template_memory(
+        st.session_state.session_memory_by_type,
+        diagram_type=diagram_type,
+        template_id=template_id,
+        template_name=template_name,
+        template_description=template_description,
+        bootstrap=bootstrap,
+    )
+
+
+def build_user_message_with_memory(diagram_type: str, user_message: str) -> str:
+    context = build_memory_context(st.session_state.session_memory_by_type, diagram_type=diagram_type)
+    if not context:
+        return user_message
+    return (
+        f"{user_message}\n\n"
+        "Session Memory:\n"
+        f"{context}\n"
+    )
+
+
+def reset_conversation_for_template(diagram_type: str, bootstrap: bool) -> None:
+    if not should_reset_conversation(bootstrap):
+        return
+    if diagram_type == "Flowchart":
+        st.session_state.chat_history = []
+        st.session_state.mode = "scope"
+        st.session_state.source = "fallback"
+        return
+    st.session_state.mermaid_chat_history_by_type[diagram_type] = []
+    st.session_state.mermaid_agent_state_by_type[diagram_type] = {
+        "phase": "initial",
+        "source": "fallback",
+        "message": "Conversation reset due to template switch.",
+    }
 
 
 def get_canvas_graph(diagram_type: str) -> dict:
@@ -525,8 +576,9 @@ def render_candidate_manager(diagram_type: str, mermaid_code: str, graph_data: d
 
 def run_agent_turn(user_message: str) -> None:
     orchestrator = get_orchestrator()
+    effective_message = build_user_message_with_memory("Flowchart", user_message)
     turn = orchestrator.run_turn(
-        user_message=user_message,
+        user_message=effective_message,
         chat_history=st.session_state.chat_history,
         current_scope=st.session_state.scope_summary,
         current_graph=st.session_state.graph_data,
@@ -550,9 +602,10 @@ def run_mermaid_agent_turn(diagram_type: str, user_message: str) -> None:
     orchestrator = get_mermaid_orchestrator()
     history = st.session_state.mermaid_chat_history_by_type.setdefault(diagram_type, [])
     current_code = get_mermaid_code(diagram_type)
+    effective_message = build_user_message_with_memory(diagram_type, user_message)
     turn = orchestrator.run_turn(
         diagram_type=diagram_type,
-        user_message=user_message,
+        user_message=effective_message,
         chat_history=history,
         current_code=current_code,
     )
@@ -831,6 +884,14 @@ ensure_state()
 
 if not st.session_state.default_template_loaded:
     apply_flowchart_template("ec_purchase")
+    template = get_flowchart_template("ec_purchase")
+    append_template_session_memory(
+        diagram_type="Flowchart",
+        template_id=template["id"],
+        template_name=template["name"],
+        template_description=template["description"],
+        bootstrap=True,
+    )
     st.session_state.default_template_loaded = True
 
 selected_mode = st.session_state.edit_mode_by_type.get(st.session_state.diagram_type, "Manual")
@@ -868,6 +929,15 @@ with st.sidebar:
         col_l, col_r = st.columns(2)
         if col_l.button("Load Template", use_container_width=True):
             apply_flowchart_template(selected_id)
+            selected_template = template_lookup[selected_id]
+            append_template_session_memory(
+                diagram_type="Flowchart",
+                template_id=selected_template["id"],
+                template_name=selected_template["name"],
+                template_description=selected_template["description"],
+                bootstrap=False,
+            )
+            reset_conversation_for_template("Flowchart", bootstrap=False)
         if col_r.button("Start Blank", use_container_width=True):
             st.session_state.graph_data = None
             st.session_state.flow_state = StreamlitFlowState(nodes=[], edges=[])
@@ -910,6 +980,15 @@ with st.sidebar:
                     sync_editor=True,
                 )
                 set_canvas_graph(diagram_type, parse_mermaid_to_graph(diagram_type, template_code))
+                selected_template = lookup[selected_mermaid_id]
+                append_template_session_memory(
+                    diagram_type=diagram_type,
+                    template_id=selected_template["id"],
+                    template_name=selected_template["name"],
+                    template_description=selected_template["description"],
+                    bootstrap=False,
+                )
+                reset_conversation_for_template(diagram_type, bootstrap=False)
         else:
             st.info("No predefined templates for this diagram type yet.")
 
