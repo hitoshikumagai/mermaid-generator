@@ -218,6 +218,8 @@ def ensure_state() -> None:
         st.session_state.llm_api_key = ""
     if "llm_model" not in st.session_state:
         st.session_state.llm_model = str(os.getenv("OPENAI_MODEL", "gpt-4o-mini"))
+    if "flow_preview_fullscreen" not in st.session_state:
+        st.session_state.flow_preview_fullscreen = False
 
     st.session_state.flow_state = coerce_flow_state(st.session_state.flow_state)
 
@@ -1120,12 +1122,16 @@ if st.session_state.diagram_type == "Flowchart":
     current_nodes, current_edges = flow_items_to_graph_data(curr_state.nodes, curr_state.edges)
     mermaid_text = export_to_mermaid(current_nodes, current_edges)
 
-    col1, col2 = st.columns(2)
-    with col1:
-        st.markdown("### Flowchart Preview")
-        render_mermaid_preview(mermaid_text, height=420)
-        st.markdown("### Mermaid Export")
-        st.code(mermaid_text, language="mermaid")
+    toggle_label = (
+        "Exit Fullscreen Preview" if st.session_state.flow_preview_fullscreen else "Fullscreen Flowchart Preview"
+    )
+    if st.button(toggle_label, key="flow_preview_fullscreen_toggle", use_container_width=False):
+        st.session_state.flow_preview_fullscreen = not st.session_state.flow_preview_fullscreen
+        st.rerun()
+
+    if st.session_state.flow_preview_fullscreen:
+        st.markdown("### Flowchart Preview (Fullscreen)")
+        render_mermaid_preview(mermaid_text, height=860)
         st.download_button(
             "Export Mermaid (.mmd)",
             data=mermaid_text,
@@ -1133,20 +1139,49 @@ if st.session_state.diagram_type == "Flowchart":
             mime="text/plain",
             use_container_width=True,
         )
-    with col2:
-        if selected_mode == "Orchestration":
-            st.markdown("### Impact Summary")
-            render_impact_summary(st.session_state.impact)
-            st.caption(st.session_state.impact.get("message", ""))
-            st.markdown("### Impact Range")
-            st.json(st.session_state.impact, expanded=False)
-        st.markdown("### Debug")
-        st.json({"node_count": len(curr_state.nodes), "edge_count": len(curr_state.edges)}, expanded=False)
-        render_candidate_manager(
-            "Flowchart",
-            mermaid_text,
-            {"nodes": current_nodes, "edges": current_edges},
-        )
+        with st.expander("Mermaid Export / Details", expanded=False):
+            st.code(mermaid_text, language="mermaid")
+            if selected_mode == "Orchestration":
+                st.markdown("### Impact Summary")
+                render_impact_summary(st.session_state.impact)
+                st.caption(st.session_state.impact.get("message", ""))
+                st.markdown("### Impact Range")
+                st.json(st.session_state.impact, expanded=False)
+            st.markdown("### Debug")
+            st.json({"node_count": len(curr_state.nodes), "edge_count": len(curr_state.edges)}, expanded=False)
+            render_candidate_manager(
+                "Flowchart",
+                mermaid_text,
+                {"nodes": current_nodes, "edges": current_edges},
+            )
+    else:
+        col1, col2 = st.columns(2)
+        with col1:
+            st.markdown("### Flowchart Preview")
+            render_mermaid_preview(mermaid_text, height=420)
+            st.markdown("### Mermaid Export")
+            st.code(mermaid_text, language="mermaid")
+            st.download_button(
+                "Export Mermaid (.mmd)",
+                data=mermaid_text,
+                file_name=get_export_filename("Flowchart"),
+                mime="text/plain",
+                use_container_width=True,
+            )
+        with col2:
+            if selected_mode == "Orchestration":
+                st.markdown("### Impact Summary")
+                render_impact_summary(st.session_state.impact)
+                st.caption(st.session_state.impact.get("message", ""))
+                st.markdown("### Impact Range")
+                st.json(st.session_state.impact, expanded=False)
+            st.markdown("### Debug")
+            st.json({"node_count": len(curr_state.nodes), "edge_count": len(curr_state.edges)}, expanded=False)
+            render_candidate_manager(
+                "Flowchart",
+                mermaid_text,
+                {"nodes": current_nodes, "edges": current_edges},
+            )
 
     if selected_mode == "Orchestration":
         st.caption("Configure API key in LLM Settings (Environment or Input in App) to enable real LLM orchestration.")
