@@ -54,6 +54,9 @@ from src.mermaid_generator.diagram_management import (  # noqa: E402
 from src.mermaid_generator.diagram_management_assistant import (  # noqa: E402
     DiagramDecisionAssistant,
 )
+from src.mermaid_generator.parent_class_assistant import (  # noqa: E402
+    ParentClassAssistant,
+)
 
 
 @st.cache_resource
@@ -74,6 +77,11 @@ def get_diagram_repository() -> DiagramRepository:
 @st.cache_resource
 def get_diagram_assistant() -> DiagramDecisionAssistant:
     return DiagramDecisionAssistant()
+
+
+@st.cache_resource
+def get_parent_class_assistant() -> ParentClassAssistant:
+    return ParentClassAssistant()
 
 
 def to_flow_state(nodes_data: list, edges_data: list, positions: dict) -> StreamlitFlowState:
@@ -609,6 +617,31 @@ def render_property_panel(diagram_type: str, graph_data: dict) -> dict:
             parent_id = st.selectbox("Parent Class", parent_candidates, key=f"sub_parent_{diagram_type}")
             if st.button("Apply Subclass", key=f"apply_subclass_{diagram_type}"):
                 updated_graph = upsert_class_subclass_relation(updated_graph, child_id, parent_id)
+            llm_hint = st.text_input(
+                "Parent Suggestion Prompt",
+                value="",
+                key=f"sub_hint_{diagram_type}",
+            )
+            if st.button("Suggest Parent (LLM/Fallback)", key=f"suggest_subclass_{diagram_type}"):
+                assistant = get_parent_class_assistant()
+                suggestion = assistant.suggest_parent(
+                    graph_data=updated_graph,
+                    child_id=child_id,
+                    user_request=llm_hint,
+                )
+                suggested_parent = suggestion.get("parent_id", "")
+                if suggested_parent:
+                    updated_graph = upsert_class_subclass_relation(
+                        updated_graph, child_id=child_id, parent_id=suggested_parent
+                    )
+                st.session_state[f"subclass_suggestion_{diagram_type}"] = suggestion
+            suggestion_state = st.session_state.get(f"subclass_suggestion_{diagram_type}", {})
+            if suggestion_state:
+                st.caption(
+                    f"{suggestion_state.get('source', 'fallback')}: "
+                    f"{suggestion_state.get('child_id', '')} -> {suggestion_state.get('parent_id', '')}"
+                )
+                st.caption(suggestion_state.get("reason", ""))
         else:
             st.caption("Add at least two classes to define subclass relation.")
 
