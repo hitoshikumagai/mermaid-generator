@@ -5,6 +5,9 @@ This repository provides a Python-only flowchart generator with a GUI editor. Th
 1. LLM generates logical structure only (nodes/edges as JSON, no coordinates).
 2. Python computes node coordinates using a layout engine (NetworkX).
 3. Streamlit-Flow renders the graph and allows manual adjustments.
+4. A lightweight orchestrator changes behavior by turn:
+   - first turn: scope clarification + initial diagram generation
+   - second turn onward: graph update + impact range detection
 
 The app lives under `app/` and business logic lives under `src/`.
 The `testbed/` directory is reserved for tests to support TDD.
@@ -24,6 +27,13 @@ Run the app:
 streamlit run app/app.py
 ```
 
+Enable real LLM mode (optional):
+
+```bash
+export OPENAI_API_KEY=\"your_api_key\"
+# optional: export OPENAI_MODEL=\"gpt-4o-mini\"
+```
+
 Run tests:
 
 ```bash
@@ -34,12 +44,13 @@ pytest -q testbed
 
 ```bash
 conda install -c conda-forge streamlit networkx
-pip install streamlit-flow
+pip install streamlit-flow-component==1.6.1
 ```
 
 ## Architecture
 
 - LLM: returns JSON with `nodes` and `edges`.
+- Orchestrator: manages first-turn scope flow and update-turn impact analysis.
 - Layout: uses NetworkX to compute a simple hierarchical layout.
 - UI: Streamlit-Flow renders nodes/edges and supports drag-and-drop editing.
 - Export: UI state is converted to Mermaid syntax.
@@ -75,8 +86,10 @@ graph TD;
 - `environment.yml`: conda environment definition
 - `app/app.py`: Streamlit UI entrypoint
 - `src/mermaid_generator/graph_logic.py`: business logic
+- `src/mermaid_generator/orchestrator.py`: LLM orchestration and impact range detection
 - `src/mermaid_generator/ui_mapper.py`: UI conversion functions (testable)
 - `testbed/test_graph_logic.py`: tests for TDD workflow
+- `testbed/test_orchestrator.py`: tests for first-turn/update-turn behavior
 - `testbed/test_ui_mapper.py`: tests for UI conversion
 
 ## Notes

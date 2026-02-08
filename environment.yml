@@ -8,4 +8,4 @@ dependencies:
   - pytest
   - pip
   - pip:
-      - streamlit-flow
+      - streamlit-flow-component==1.6.1
