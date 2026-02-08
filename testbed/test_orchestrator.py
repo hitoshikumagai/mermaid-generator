@@ -119,6 +119,21 @@ def test_fallback_first_turn_is_scope_when_too_short():
     assert turn.impact["phase"] == "initial"
 
 
+def test_flowchart_strict_llm_blocks_fallback_when_llm_disabled():
+    orchestrator = FlowchartOrchestrator(llm_client=DisabledClient())
+    turn = orchestrator.run_turn(
+        user_message="build workflow",
+        chat_history=[],
+        current_scope="",
+        current_graph=None,
+        strict_llm=True,
+    )
+
+    assert turn.source == "llm_strict_blocked"
+    assert turn.graph_data is None
+    assert "LLM-only mode" in turn.assistant_message
+
+
 def test_fallback_second_turn_reports_impact():
     orchestrator = FlowchartOrchestrator(llm_client=DisabledClient())
     current_graph = build_mock_graph("first")
@@ -150,9 +165,29 @@ def test_flowchart_fallback_does_not_put_memory_block_in_label():
     )
 
     assert turn.graph_data is not None
-    proc = next(node for node in turn.graph_data["nodes"] if node["id"] == "proc1")
-    assert "Session Memory" not in proc["label"]
-    assert "template=" not in proc["label"]
+    labels = [node["label"] for node in turn.graph_data["nodes"]]
+    assert all("Session Memory" not in label for label in labels)
+    assert all("template=" not in label for label in labels)
+
+
+def test_flowchart_fallback_expands_multistep_text():
+    orchestrator = FlowchartOrchestrator(llm_client=DisabledClient())
+    turn = orchestrator.run_turn(
+        user_message=(
+            "1. Decide schedule\n"
+            "Handle inbox in batches.\n"
+            "2. Apply two-minute rule\n"
+            "Reply quickly when possible.\n"
+            "3. Keep folder structure minimal\n"
+            "4. Reuse templates\n"
+        ),
+        chat_history=[],
+        current_scope="",
+        current_graph=None,
+    )
+
+    assert turn.graph_data is not None
+    assert len(turn.graph_data["nodes"]) >= 7
 
 
 def test_llm_second_turn_uses_update_path():
@@ -187,6 +222,21 @@ def test_mermaid_fallback_initial_loads_template():
     assert turn.source == "fallback"
     assert turn.phase == "initial"
     assert "sequenceDiagram" in turn.mermaid_code
+
+
+def test_mermaid_strict_llm_blocks_fallback_when_llm_disabled():
+    orchestrator = MermaidDiagramOrchestrator(llm_client=DisabledClient())
+    turn = orchestrator.run_turn(
+        diagram_type="Sequence",
+        user_message="create sequence",
+        chat_history=[],
+        current_code="",
+        strict_llm=True,
+    )
+
+    assert turn.source == "llm_strict_blocked"
+    assert "sequenceDiagram" in turn.mermaid_code
+    assert "LLM-only mode" in turn.assistant_message
 
 
 def test_mermaid_llm_update_uses_update_path():

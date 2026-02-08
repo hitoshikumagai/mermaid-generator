@@ -5,7 +5,7 @@ import urllib.request
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
-from .graph_logic import GraphData, build_mock_graph
+from .graph_logic import GraphData, build_mock_graph, build_structured_flow_graph
 from .mermaid_agent_roles import (
     MermaidActAgent,
     MermaidObserveAgent,
@@ -97,10 +97,28 @@ class FlowchartOrchestrator:
         chat_history: List[ChatMessage],
         current_scope: str,
         current_graph: Optional[GraphData],
+        strict_llm: bool = False,
     ) -> AgentTurn:
         has_graph = bool(current_graph and current_graph.get("nodes"))
 
         if not self.llm_client.is_enabled():
+            if strict_llm:
+                return AgentTurn(
+                    assistant_message=(
+                        "LLM-only mode is enabled. OPENAI_API_KEY is not configured, "
+                        "so fallback generation is disabled."
+                    ),
+                    scope_summary=current_scope or "",
+                    graph_data=current_graph if has_graph else None,
+                    mode="scope" if not has_graph else "visualize",
+                    source="llm_strict_blocked",
+                    impact={
+                        "phase": "update" if has_graph else "initial",
+                        "message": "LLM unavailable in strict mode.",
+                        "impacted_node_ids": [],
+                        "impacted_edge_ids": [],
+                    },
+                )
             if has_graph:
                 return self._run_fallback_update(user_message, current_scope, current_graph)
             return self._run_fallback_initial(user_message, current_scope)
@@ -110,6 +128,20 @@ class FlowchartOrchestrator:
                 return self._run_llm_update(user_message, chat_history, current_scope, current_graph)
             return self._run_llm_initial(user_message, chat_history, current_scope)
         except Exception as exc:
+            if strict_llm:
+                return AgentTurn(
+                    assistant_message=f"LLM-only mode blocked fallback after LLM error: {exc}",
+                    scope_summary=current_scope or "",
+                    graph_data=current_graph if has_graph else None,
+                    mode="scope" if not has_graph else "visualize",
+                    source="llm_strict_error",
+                    impact={
+                        "phase": "update" if has_graph else "initial",
+                        "message": "LLM failed and fallback is disabled in strict mode.",
+                        "impacted_node_ids": [],
+                        "impacted_edge_ids": [],
+                    },
+                )
             if has_graph:
                 fallback = self._run_fallback_update(user_message, current_scope, current_graph)
             else:
@@ -278,7 +310,7 @@ class FlowchartOrchestrator:
                 },
             )
 
-        graph_data = build_mock_graph(user_message)
+        graph_data = build_structured_flow_graph(user_message)
         return AgentTurn(
             assistant_message="Generated an initial draft diagram from your scope.",
             scope_summary=combined_scope,
@@ -300,7 +332,7 @@ class FlowchartOrchestrator:
         current_graph: GraphData,
     ) -> AgentTurn:
         new_scope = (current_scope + "\n" + user_message).strip()
-        updated_graph = build_mock_graph(user_message or current_scope or "workflow update")
+        updated_graph = build_structured_flow_graph(user_message or current_scope or "workflow update")
         impact = compute_impact_range(current_graph, updated_graph)
         impact["phase"] = "update"
         return AgentTurn(
@@ -329,10 +361,19 @@ class MermaidDiagramOrchestrator:
         user_message: str,
         chat_history: List[ChatMessage],
         current_code: str,
+        strict_llm: bool = False,
     ) -> MermaidTurn:
         observed = self.observe_agent.observe(user_message=user_message, current_code=current_code)
         ok, reason = observed.validate()
         if not ok:
+            if strict_llm:
+                return MermaidTurn(
+                    assistant_message=f"LLM-only mode: invalid request ({reason}).",
+                    mermaid_code=current_code or _default_mermaid_template(diagram_type),
+                    source="llm_strict_blocked",
+                    phase="update" if bool((current_code or "").strip()) else "initial",
+                    change_summary="Request validation failed in LLM-only mode.",
+                )
             return self._run_fallback_with_roles(
                 diagram_type=diagram_type,
                 user_message=user_message or "create default diagram",
@@ -343,6 +384,17 @@ class MermaidDiagramOrchestrator:
         has_code = observed.has_current_code
 
         if not self.llm_client.is_enabled():
+            if strict_llm:
+                return MermaidTurn(
+                    assistant_message=(
+                        "LLM-only mode is enabled. OPENAI_API_KEY is not configured, "
+                        "so fallback generation is disabled."
+                    ),
+                    mermaid_code=current_code or _default_mermaid_template(diagram_type),
+                    source="llm_strict_blocked",
+                    phase="update" if has_code else "initial",
+                    change_summary="LLM unavailable in strict mode.",
+                )
             return self._run_fallback_with_roles(
                 diagram_type=diagram_type,
                 user_message=observed.user_message,
@@ -357,6 +409,14 @@ class MermaidDiagramOrchestrator:
                 ok, reason = self.verify_agent.verify(diagram_type, turn.mermaid_code, current_code, user_message)
                 if ok:
                     return turn
+                if strict_llm:
+                    return MermaidTurn(
+                        assistant_message=f"LLM-only mode rejected output at verify step: {reason}",
+                        mermaid_code=current_code or _default_mermaid_template(diagram_type),
+                        source="llm_strict_verify",
+                        phase="update",
+                        change_summary="LLM output failed verification in strict mode.",
+                    )
                 return self._run_fallback_with_roles(
                     diagram_type=diagram_type,
                     user_message=observed.user_message,
@@ -368,6 +428,14 @@ class MermaidDiagramOrchestrator:
             ok, reason = self.verify_agent.verify(diagram_type, turn.mermaid_code, "", user_message)
             if ok:
                 return turn
+            if strict_llm:
+                return MermaidTurn(
+                    assistant_message=f"LLM-only mode rejected initial output at verify step: {reason}",
+                    mermaid_code=current_code or _default_mermaid_template(diagram_type),
+                    source="llm_strict_verify",
+                    phase="initial",
+                    change_summary="Initial LLM output failed verification in strict mode.",
+                )
             return self._run_fallback_with_roles(
                 diagram_type=diagram_type,
                 user_message=observed.user_message,
@@ -376,6 +444,14 @@ class MermaidDiagramOrchestrator:
                 reason=f"verify failed: {reason}",
             )
         except Exception as exc:
+            if strict_llm:
+                return MermaidTurn(
+                    assistant_message=f"LLM-only mode blocked fallback after LLM error: {exc}",
+                    mermaid_code=current_code or _default_mermaid_template(diagram_type),
+                    source="llm_strict_error",
+                    phase="update" if has_code else "initial",
+                    change_summary="LLM failed and fallback is disabled in strict mode.",
+                )
             return self._run_fallback_with_roles(
                 diagram_type=diagram_type,
                 user_message=observed.user_message,

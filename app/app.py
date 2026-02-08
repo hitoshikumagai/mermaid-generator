@@ -199,6 +199,8 @@ def ensure_state() -> None:
         st.session_state.default_template_loaded = False
     if "session_memory_by_type" not in st.session_state:
         st.session_state.session_memory_by_type = {}
+    if "llm_mode_by_type" not in st.session_state:
+        st.session_state.llm_mode_by_type = {}
 
     st.session_state.flow_state = coerce_flow_state(st.session_state.flow_state)
 
@@ -228,6 +230,8 @@ def ensure_state() -> None:
             st.session_state.edit_mode_by_type[diagram_type] = (
                 "Orchestration" if diagram_type == "Flowchart" else "Manual"
             )
+        if diagram_type not in st.session_state.llm_mode_by_type:
+            st.session_state.llm_mode_by_type[diagram_type] = "LLM + Fallback"
 
 
 def get_mermaid_code(diagram_type: str) -> str:
@@ -577,11 +581,13 @@ def render_candidate_manager(diagram_type: str, mermaid_code: str, graph_data: d
 def run_agent_turn(user_message: str) -> None:
     orchestrator = get_orchestrator()
     effective_message = build_user_message_with_memory("Flowchart", user_message)
+    llm_mode = st.session_state.llm_mode_by_type.get("Flowchart", "LLM + Fallback")
     turn = orchestrator.run_turn(
         user_message=effective_message,
         chat_history=st.session_state.chat_history,
         current_scope=st.session_state.scope_summary,
         current_graph=st.session_state.graph_data,
+        strict_llm=(llm_mode == "LLM Only"),
     )
 
     st.session_state.chat_history.append({"role": "assistant", "content": turn.assistant_message})
@@ -603,11 +609,13 @@ def run_mermaid_agent_turn(diagram_type: str, user_message: str) -> None:
     history = st.session_state.mermaid_chat_history_by_type.setdefault(diagram_type, [])
     current_code = get_mermaid_code(diagram_type)
     effective_message = build_user_message_with_memory(diagram_type, user_message)
+    llm_mode = st.session_state.llm_mode_by_type.get(diagram_type, "LLM + Fallback")
     turn = orchestrator.run_turn(
         diagram_type=diagram_type,
         user_message=effective_message,
         chat_history=history,
         current_code=current_code,
+        strict_llm=(llm_mode == "LLM Only"),
     )
     history.append({"role": "assistant", "content": turn.assistant_message})
     set_mermaid_code(diagram_type, turn.mermaid_code, sync_editor=True)
@@ -909,6 +917,13 @@ with st.sidebar:
         horizontal=True,
     )
     st.session_state.edit_mode_by_type[diagram_type] = selected_mode
+    llm_mode = st.radio(
+        "LLM Mode",
+        ["LLM + Fallback", "LLM Only"],
+        index=0 if st.session_state.llm_mode_by_type.get(diagram_type, "LLM + Fallback") == "LLM + Fallback" else 1,
+        help="LLM Only disables all fallback generation.",
+    )
+    st.session_state.llm_mode_by_type[diagram_type] = llm_mode
 
     if diagram_type == "Flowchart":
         templates = list_flowchart_templates()
@@ -953,6 +968,7 @@ with st.sidebar:
             st.markdown("### Agent Status")
             st.write(f"`mode`: {st.session_state.mode}")
             st.write(f"`source`: {st.session_state.source}")
+            st.write(f"`llm_mode`: {st.session_state.llm_mode_by_type.get('Flowchart', 'LLM + Fallback')}")
             st.markdown("### Scope Summary")
             st.caption(st.session_state.scope_summary or "(empty)")
         else:
@@ -1012,6 +1028,7 @@ with st.sidebar:
             st.markdown("### Agent Status")
             st.write(f"`phase`: {agent_state.get('phase', 'initial')}")
             st.write(f"`source`: {agent_state.get('source', 'fallback')}")
+            st.write(f"`llm_mode`: {st.session_state.llm_mode_by_type.get(diagram_type, 'LLM + Fallback')}")
             st.caption(agent_state.get("message", ""))
         else:
             st.caption("Manual mode: drag and edit nodes directly in the canvas.")

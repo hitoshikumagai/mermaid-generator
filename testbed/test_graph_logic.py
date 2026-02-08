@@ -4,6 +4,7 @@ pytest.importorskip("networkx")
 
 from src.mermaid_generator.graph_logic import (
     build_mock_graph,
+    build_structured_flow_graph,
     calculate_layout_positions,
     count_edge_crossings,
     export_to_mermaid,
@@ -30,6 +31,27 @@ def test_build_mock_graph_strips_session_memory_and_markdown_noise():
     assert "\n" not in proc["label"]
     assert "Session Memory" not in proc["label"]
     assert "template=" not in proc["label"]
+
+
+def test_build_structured_flow_graph_expands_numbered_sections():
+    text = (
+        "1. Decide batch schedule\n"
+        "Handle email at fixed times.\n"
+        "2. Apply two-minute rule\n"
+        "Reply immediately if quick.\n"
+        "3. Keep folders minimal\n"
+        "Use Action and Archive.\n"
+        "4. Reuse templates\n"
+        "Store common replies.\n"
+    )
+    graph = build_structured_flow_graph(text)
+
+    labels = [node["label"] for node in graph["nodes"]]
+    assert any("Decide batch schedule" in label for label in labels)
+    assert any("Apply two-minute rule" in label for label in labels)
+    assert any("Keep folders minimal" in label for label in labels)
+    assert any("Reuse templates" in label for label in labels)
+    assert len(graph["nodes"]) >= 8
 
 
 def test_calculate_layout_positions_is_hierarchical_for_dag():

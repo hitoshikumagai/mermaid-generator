@@ -33,6 +33,43 @@ def build_mock_graph(topic: str) -> GraphData:
     }
 
 
+def build_structured_flow_graph(
+    text: str,
+    max_steps: int = 8,
+    max_details_per_step: int = 2,
+) -> GraphData:
+    sections = _extract_flow_sections(
+        text=text,
+        max_steps=max_steps,
+        max_details_per_step=max_details_per_step,
+    )
+    if len(sections) < 2:
+        return build_mock_graph(text)
+
+    nodes: List[Dict[str, str]] = [{"id": "start", "label": "Start", "type": "input"}]
+    edges: List[Dict[str, str]] = []
+    edge_counter = 1
+    previous_main_id = "start"
+
+    for step_index, section in enumerate(sections, start=1):
+        main_id = f"step_{step_index}"
+        nodes.append({"id": main_id, "label": section["title"], "type": "default"})
+        edges.append({"id": f"e{edge_counter}", "source": previous_main_id, "target": main_id, "label": ""})
+        edge_counter += 1
+
+        for detail_index, detail in enumerate(section["details"], start=1):
+            detail_id = f"{main_id}_detail_{detail_index}"
+            nodes.append({"id": detail_id, "label": detail, "type": "default"})
+            edges.append({"id": f"e{edge_counter}", "source": main_id, "target": detail_id, "label": "detail"})
+            edge_counter += 1
+
+        previous_main_id = main_id
+
+    nodes.append({"id": "end", "label": "End", "type": "output"})
+    edges.append({"id": f"e{edge_counter}", "source": previous_main_id, "target": "end", "label": "done"})
+    return {"nodes": nodes, "edges": edges}
+
+
 def calculate_layout_positions(
     nodes_data: List[NodeData], edges_data: List[EdgeData]
 ) -> PositionMap:
@@ -329,3 +366,88 @@ def _normalize_topic_label(topic: str, max_len: int = 72) -> str:
     if len(chosen) > max_len:
         chosen = f"{chosen[: max_len - 3].rstrip()}..."
     return chosen
+
+
+def _extract_flow_sections(
+    text: str,
+    max_steps: int,
+    max_details_per_step: int,
+) -> List[Dict[str, List[str]]]:
+    raw = (text or "").strip()
+    if not raw:
+        return []
+
+    if "Session Memory:" in raw:
+        raw = raw.split("Session Memory:", 1)[0].strip()
+
+    heading_pattern = re.compile(r"^(?:\d+|[\u2460-\u2473])[\)\.\u3001\uFF0E]?\s*(.+)$")
+    hash_heading_pattern = re.compile(r"^#{1,6}\s*(.+)$")
+    sections: List[Dict[str, List[str]]] = []
+    current: Dict[str, List[str]] = {}
+
+    for raw_line in raw.splitlines():
+        line = _clean_section_line(raw_line)
+        if not line:
+            continue
+
+        title = ""
+        heading_match = heading_pattern.match(line)
+        hash_heading_match = hash_heading_pattern.match(line)
+        if heading_match:
+            title = heading_match.group(1).strip()
+        elif hash_heading_match:
+            title = hash_heading_match.group(1).strip()
+
+        if title:
+            if len(sections) >= max_steps:
+                continue
+            current = {"title": [_truncate_text(title, 56)], "details": []}
+            sections.append(current)
+            continue
+
+        if not sections:
+            continue
+
+        if len(current.get("details", [])) >= max_details_per_step:
+            continue
+
+        if _is_section_noise(line):
+            continue
+        current["details"].append(_truncate_text(line, 68))
+
+    if sections:
+        return [{"title": item["title"][0], "details": item["details"]} for item in sections if item["title"]]
+
+    sentences = [s.strip() for s in re.split(r"[。.!?]", raw) if s.strip()]
+    normalized = [_truncate_text(_clean_section_line(s), 56) for s in sentences]
+    normalized = [item for item in normalized if item]
+    return [{"title": item, "details": []} for item in normalized[:max_steps]]
+
+
+def _clean_section_line(line: str) -> str:
+    cleaned = (line or "").strip()
+    cleaned = re.sub(r"\*\*(.*?)\*\*", r"\1", cleaned)
+    cleaned = re.sub(r"`([^`]*)`", r"\1", cleaned)
+    cleaned = re.sub(r"^[-*]\s*", "", cleaned)
+    cleaned = re.sub(r"^>\s*", "", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned
+
+
+def _is_section_noise(line: str) -> bool:
+    if not line:
+        return True
+    if line.startswith("|") and line.endswith("|"):
+        return True
+    if re.fullmatch(r"[-:| ]+", line):
+        return True
+    lowered = line.lower()
+    if lowered in {"summary", "background", "requirements", "acceptance criteria"}:
+        return True
+    return False
+
+
+def _truncate_text(text: str, max_len: int) -> str:
+    if len(text) <= max_len:
+        return text
+    return f"{text[: max_len - 3].rstrip()}..."
