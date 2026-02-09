@@ -35,3 +35,20 @@ def test_gantt_validator_warns_for_unknown_dependency():
 
     assert report.valid is True
     assert any(item.rule_id == "unknown_dependency_task" for item in report.findings)
+
+
+def test_validator_detects_foreign_header_for_selected_type():
+    validator = MermaidDiagramValidator(enable_llm_assist=False)
+    report = validator.validate_turn(
+        diagram_type="Sequence",
+        candidate_code=(
+            "sequenceDiagram\n"
+            "classDiagram\n"
+            "    class A\n"
+        ),
+        current_code="",
+        user_message="build sequence",
+    )
+
+    assert report.valid is False
+    assert any(item.rule_id == "diagram_type_mismatch" for item in report.findings)

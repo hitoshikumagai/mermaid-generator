@@ -73,6 +73,9 @@ from src.mermaid_generator.session_memory import (  # noqa: E402
     build_memory_context,
     should_reset_conversation,
 )
+from src.mermaid_generator.validation_feedback import (  # noqa: E402
+    build_validation_feedback,
+)
 
 
 def get_orchestrator() -> FlowchartOrchestrator:
@@ -670,6 +673,7 @@ def run_mermaid_agent_turn(diagram_type: str, user_message: str) -> None:
         "phase": turn.phase,
         "source": turn.source,
         "message": turn.change_summary,
+        "validation": dict(turn.validation or {}),
     }
 
 
@@ -1380,4 +1384,20 @@ else:
             st.caption(agent_state.get("message", ""))
             st.markdown("### Source")
             st.caption(agent_state.get("source", "fallback"))
+            feedback = build_validation_feedback(agent_state.get("validation", {}))
+            if feedback.get("level") != "none":
+                st.markdown("### Validation")
+                level = feedback.get("level")
+                text = f"{feedback.get('title', '')}: {feedback.get('message', '')}".strip(": ")
+                if level == "error":
+                    st.error(text)
+                elif level == "warning":
+                    st.warning(text)
+                elif level == "success":
+                    st.success(text)
+                else:
+                    st.info(text)
+                guidance = feedback.get("guidance", "").strip()
+                if guidance:
+                    st.caption(guidance)
         st.caption("Configure API key in LLM Settings (Environment or Input in App) to enable real LLM orchestration.")
