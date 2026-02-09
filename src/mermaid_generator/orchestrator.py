@@ -1,6 +1,5 @@
 import json
 import os
-import re
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
@@ -170,25 +169,6 @@ class FlowchartOrchestrator:
             assistant_message = "Scope updated. Add details if needed."
 
         if not ready:
-            if _should_force_initial_draft(user_message):
-                graph_data = build_structured_flow_graph(user_message)
-                draft_message = (
-                    f"{assistant_message} Generated a draft from your structured text. "
-                    "You can refine details in the next turn."
-                ).strip()
-                return AgentTurn(
-                    assistant_message=draft_message,
-                    scope_summary=scope_summary or _truncate_scope_text(user_message),
-                    graph_data=graph_data,
-                    mode="visualize",
-                    source="llm_bootstrap_draft",
-                    impact={
-                        "phase": "initial",
-                        "message": "Generated draft from long structured input while scope remains ambiguous.",
-                        "impacted_node_ids": sorted([node["id"] for node in graph_data["nodes"]]),
-                        "impacted_edge_ids": sorted([edge["id"] for edge in graph_data["edges"]]),
-                    },
-                )
             return AgentTurn(
                 assistant_message=assistant_message,
                 scope_summary=scope_summary,
@@ -994,33 +974,6 @@ def _format_history(history: List[ChatMessage]) -> str:
         content = msg.get("content", "")
         lines.append(f"{role}: {content}")
     return "\n".join(lines) if lines else "(no history)"
-
-
-def _should_force_initial_draft(user_message: str) -> bool:
-    text = (user_message or "").strip()
-    if len(text) < 280:
-        return False
-
-    lines = [line.strip() for line in text.splitlines() if line.strip()]
-    if len(lines) < 8:
-        return False
-
-    heading_count = sum(1 for line in lines if line.startswith("#"))
-    bullet_count = sum(1 for line in lines if line.startswith(("-", "*", "•")))
-    numbered_count = len(
-        re.findall(r"(?m)^\s*(?:\d+[\.\)]|[①-⑳])\s*", text)
-    )
-    section_like_count = heading_count + bullet_count + numbered_count
-
-    sentence_count = len(re.findall(r"[。.!?]\s*", text))
-    return section_like_count >= 4 and sentence_count >= 4
-
-
-def _truncate_scope_text(text: str, max_chars: int = 220) -> str:
-    value = (text or "").strip().replace("\n", " ")
-    if len(value) <= max_chars:
-        return value
-    return value[: max_chars - 3].rstrip() + "..."
 
 
 MERMAID_HEADERS = {
