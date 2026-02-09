@@ -225,3 +225,55 @@ def test_missing_diagram_operations_raise_value_error(tmp_path, operation):
     repo = DiagramRepository(tmp_path)
     with pytest.raises(ValueError, match="Diagram not found"):
         operation(repo)
+
+
+def test_malformed_diagrams_json_is_treated_as_empty(tmp_path):
+    (tmp_path / "diagrams.json").write_text("{invalid json", encoding="utf-8")
+    repo = DiagramRepository(tmp_path)
+
+    assert repo.list_diagrams() == []
+
+
+def test_malformed_jsonl_rows_are_skipped_in_event_and_vector_queries(tmp_path):
+    repo = DiagramRepository(tmp_path)
+    created = repo.create_diagram(
+        title="Candidate D",
+        diagram_type="Flowchart",
+        mermaid_code="graph TD;\nstart-->end;\n",
+        graph_data=_sample_graph(),
+        actor="tester",
+    )
+
+    with (tmp_path / "decision_events.jsonl").open("a", encoding="utf-8") as handle:
+        handle.write("{not-a-json-row}\n")
+    with (tmp_path / "vector_records.jsonl").open("a", encoding="utf-8") as handle:
+        handle.write("{not-a-json-row}\n")
+
+    events = repo.list_decision_events(created["id"])
+    vectors = repo.list_vector_records(created["id"])
+    assert events
+    assert vectors
+    assert all(event["diagram_id"] == created["id"] for event in events)
+    assert all(vector["diagram_id"] == created["id"] for vector in vectors)
+
+
+def test_mode_whitespace_is_normalized_to_manual_on_create_and_update(tmp_path):
+    repo = DiagramRepository(tmp_path)
+    created = repo.create_diagram(
+        title="Mode Check",
+        diagram_type="Flowchart",
+        mermaid_code="graph TD;\nstart-->end;\n",
+        graph_data=_sample_graph(),
+        actor="tester",
+        mode="   ",
+    )
+    assert created["mode"] == "Manual"
+
+    updated = repo.update_diagram_content(
+        created["id"],
+        mermaid_code="graph TD;\nstart-->middle;\nmiddle-->end;\n",
+        graph_data=_sample_graph(),
+        actor="tester",
+        mode="   ",
+    )
+    assert updated["mode"] == "Manual"

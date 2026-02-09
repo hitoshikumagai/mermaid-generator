@@ -51,7 +51,7 @@ class DiagramRepository:
             "tags": list(tags or []),
             "scope_summary": str(scope_summary or ""),
             "chat_history": deepcopy(chat_history or []),
-            "mode": str(mode or "Manual"),
+            "mode": _normalize_mode(mode),
             "created_at": now,
             "updated_at": now,
         }
@@ -99,7 +99,7 @@ class DiagramRepository:
         if chat_history is not None:
             target["chat_history"] = deepcopy(chat_history)
         if mode is not None:
-            target["mode"] = str(mode)
+            target["mode"] = _normalize_mode(mode)
         target["updated_at"] = _now_utc_iso()
         self._write_diagrams(diagrams)
         self.append_decision_event(
@@ -258,7 +258,10 @@ class DiagramRepository:
         if not path.exists():
             return deepcopy(default)
         with path.open("r", encoding="utf-8") as handle:
-            return json.load(handle)
+            try:
+                return json.load(handle)
+            except json.JSONDecodeError:
+                return deepcopy(default)
 
     def _write_json(self, path: Path, payload: Any) -> None:
         with path.open("w", encoding="utf-8") as handle:
@@ -274,7 +277,12 @@ def _read_jsonl(path: Path) -> List[Dict[str, Any]]:
             raw = line.strip()
             if not raw:
                 continue
-            rows.append(json.loads(raw))
+            try:
+                row = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(row, dict):
+                rows.append(row)
     return rows
 
 
@@ -285,6 +293,11 @@ def _append_jsonl(path: Path, row: Dict[str, Any]) -> None:
 
 def _new_id(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex[:12]}"
+
+
+def _normalize_mode(value: Any) -> str:
+    cleaned = str(value or "").strip()
+    return cleaned or "Manual"
 
 
 def _now_utc_iso() -> str:
