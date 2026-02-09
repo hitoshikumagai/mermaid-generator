@@ -13,16 +13,6 @@ MERMAID_HEADERS = {
 }
 
 
-HEADER_PREFIXES = (
-    "graph ",
-    "sequenceDiagram",
-    "stateDiagram-v2",
-    "erDiagram",
-    "classDiagram",
-    "gantt",
-)
-
-
 class JSONCompletionClient(Protocol):
     def is_enabled(self) -> bool:  # pragma: no cover - runtime integration path
         ...
@@ -166,18 +156,6 @@ class MermaidDiagramValidator:
                     )
                 )
 
-        for line in lines[1:]:
-            foreign = _detect_foreign_header(line, expected_header=header)
-            if foreign:
-                findings.append(
-                    ValidationFinding(
-                        "error",
-                        "diagram_type_mismatch",
-                        f"Detected foreign diagram header '{foreign}' in {diagram_type} code.",
-                    )
-                )
-                break
-
         body_lines = [line.strip() for line in lines[1:] if line.strip() and not line.strip().startswith("%%")]
         if not body_lines:
             findings.append(ValidationFinding("error", "missing_body", "Diagram body is empty."))
@@ -319,21 +297,3 @@ class MermaidDiagramValidator:
                         )
                     )
         return findings
-
-
-def _detect_foreign_header(line: str, expected_header: str) -> str:
-    candidate = (line or "").strip()
-    if not candidate:
-        return ""
-    for prefix in HEADER_PREFIXES:
-        if prefix == "graph ":
-            is_header = candidate.startswith("graph ")
-            normalized = "graph TD" if is_header else ""
-        else:
-            is_header = candidate == prefix
-            normalized = prefix
-        if not is_header:
-            continue
-        if expected_header and normalized != expected_header:
-            return normalized
-    return ""

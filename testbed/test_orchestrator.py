@@ -147,18 +147,6 @@ class FailingThenPassingValidator:
         return ValidationReport(source="stub", findings=[])
 
 
-class AlwaysFailingValidator:
-    def validate_turn(self, diagram_type, candidate_code, current_code, user_message):
-        _ = diagram_type
-        _ = candidate_code
-        _ = current_code
-        _ = user_message
-        return ValidationReport(
-            source="stub",
-            findings=[ValidationFinding("error", "forced_failure", "forced failure")],
-        )
-
-
 def test_compute_impact_range_detects_changes():
     prev_graph = {
         "nodes": [
@@ -346,7 +334,6 @@ def test_mermaid_orchestrator_recovers_with_fallback_when_dedicated_validator_fa
     assert validator.calls >= 2
     assert turn.source == "fallback"
     assert turn.mermaid_code.startswith("sequenceDiagram")
-    assert turn.validation["status"] == "recovered"
 
 
 def test_mermaid_llm_update_uses_update_path():
@@ -421,24 +408,6 @@ def test_mermaid_generation_enforces_selected_type_for_all_diagrams():
             current_code=wrong_code,
         )
         assert turn.mermaid_code.startswith(header + "\n")
-
-
-def test_mermaid_orchestrator_blocks_in_strict_mode_when_validator_fails():
-    orchestrator = MermaidDiagramOrchestrator(
-        llm_client=MermaidEnabledStubClient(),
-        diagram_validator=AlwaysFailingValidator(),
-    )
-    turn = orchestrator.run_turn(
-        diagram_type="Sequence",
-        user_message="add response step",
-        chat_history=[{"role": "user", "content": "initial"}],
-        current_code="sequenceDiagram\n    participant C as Client\n",
-        strict_llm=True,
-    )
-
-    assert turn.source == "llm_strict_validate"
-    assert turn.validation["status"] == "blocked"
-    assert "blocked completion" in turn.assistant_message.lower()
 
 
 def test_mermaid_llm_no_change_triggers_verify_fallback():

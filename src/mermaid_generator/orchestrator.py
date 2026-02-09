@@ -2,7 +2,7 @@ import json
 import os
 import urllib.error
 import urllib.request
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 from .diagram_validator import MermaidDiagramValidator
@@ -35,7 +35,6 @@ class MermaidTurn:
     source: str
     phase: str
     change_summary: str
-    validation: Dict[str, Any] = field(default_factory=dict)
 
 
 class OpenAIJSONClient:
@@ -540,13 +539,6 @@ class MermaidDiagramOrchestrator:
             user_message=user_message,
         )
         if report.valid:
-            turn.validation = {
-                "status": "pass",
-                "reason": "ok",
-                "source": report.source,
-                "finding_count": len(report.findings),
-                "warning_count": len(report.warnings),
-            }
             return turn
 
         reason = report.short_reason()
@@ -559,12 +551,6 @@ class MermaidDiagramOrchestrator:
                 source="llm_strict_validate" if strict_llm else turn.source,
                 phase="update" if bool((current_code or "").strip()) else "initial",
                 change_summary="Dedicated validator rejected output before completion.",
-                validation={
-                    "status": "blocked",
-                    "reason": reason,
-                    "source": report.source,
-                    "finding_count": len(report.findings),
-                },
             )
 
         repaired = self._run_fallback_with_roles(
@@ -581,13 +567,6 @@ class MermaidDiagramOrchestrator:
             user_message=user_message,
         )
         if second.valid:
-            repaired.validation = {
-                "status": "recovered",
-                "reason": reason,
-                "source": second.source,
-                "finding_count": len(second.findings),
-                "warning_count": len(second.warnings),
-            }
             return repaired
         return MermaidTurn(
             assistant_message=(
@@ -597,12 +576,6 @@ class MermaidDiagramOrchestrator:
             source="fallback_validate_blocked",
             phase="update" if bool((current_code or "").strip()) else "initial",
             change_summary="Dedicated validator rejected both primary and fallback outputs.",
-            validation={
-                "status": "blocked",
-                "reason": second.short_reason(),
-                "source": second.source,
-                "finding_count": len(second.findings),
-            },
         )
 
     def _run_fallback_with_roles(
@@ -1007,19 +980,7 @@ def _normalize_current_code_for_type(diagram_type: str, current_code: str) -> st
     raw = (current_code or "").strip()
     if not raw:
         return ""
-    normalized = sanitize_mermaid_code(diagram_type, raw, raw)
-    expected_header = MERMAID_HEADERS.get(diagram_type, "").strip()
-    lines = normalized.splitlines()
-    if not lines:
-        return normalized
-
-    clean_lines = [lines[0].strip() or expected_header]
-    for line in lines[1:]:
-        stripped = line.strip()
-        if _looks_like_header_line(stripped) and stripped != expected_header:
-            continue
-        clean_lines.append(line)
-    return "\n".join(clean_lines).rstrip() + "\n"
+    return sanitize_mermaid_code(diagram_type, raw, raw)
 
 
 def _strip_code_fence(text: str) -> str:
@@ -1040,11 +1001,3 @@ def _default_mermaid_template(diagram_type: str) -> str:
     if templates:
         return sanitize_mermaid_code(diagram_type, get_mermaid_template(diagram_type, templates[0]["id"]))
     return sanitize_mermaid_code(diagram_type, MERMAID_HEADERS.get(diagram_type, "graph TD"))
-
-
-def _looks_like_header_line(line: str) -> bool:
-    if not line:
-        return False
-    if line.startswith("graph "):
-        return True
-    return line in {"sequenceDiagram", "stateDiagram-v2", "erDiagram", "classDiagram", "gantt"}
