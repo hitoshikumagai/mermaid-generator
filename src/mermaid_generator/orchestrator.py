@@ -373,29 +373,27 @@ class MermaidDiagramOrchestrator:
         current_code: str,
         strict_llm: bool = False,
     ) -> MermaidTurn:
-        normalized_current_code = _normalize_current_code_for_type(diagram_type, current_code)
-
         def finish(turn: MermaidTurn, allow_recovery: bool = True) -> MermaidTurn:
             return self._finalize_turn(
                 diagram_type=diagram_type,
                 turn=turn,
                 user_message=user_message,
                 chat_history=chat_history,
-                current_code=normalized_current_code,
+                current_code=current_code,
                 strict_llm=strict_llm,
                 allow_recovery=allow_recovery,
             )
 
-        observed = self.observe_agent.observe(user_message=user_message, current_code=normalized_current_code)
+        observed = self.observe_agent.observe(user_message=user_message, current_code=current_code)
         ok, reason = observed.validate()
         if not ok:
             if strict_llm:
                 return finish(
                     MermaidTurn(
                         assistant_message=f"LLM-only mode: invalid request ({reason}).",
-                        mermaid_code=normalized_current_code or _default_mermaid_template(diagram_type),
+                        mermaid_code=current_code or _default_mermaid_template(diagram_type),
                         source="llm_strict_blocked",
-                        phase="update" if bool((normalized_current_code or "").strip()) else "initial",
+                        phase="update" if bool((current_code or "").strip()) else "initial",
                         change_summary="Request validation failed in LLM-only mode.",
                     ),
                     allow_recovery=False,
@@ -405,7 +403,7 @@ class MermaidDiagramOrchestrator:
                     diagram_type=diagram_type,
                     user_message=user_message or "create default diagram",
                     chat_history=chat_history,
-                    current_code=normalized_current_code,
+                    current_code=current_code,
                     reason=f"observe invalid: {reason}",
                 )
             )
@@ -419,7 +417,7 @@ class MermaidDiagramOrchestrator:
                             "LLM-only mode is enabled. OPENAI_API_KEY is not configured, "
                             "so fallback generation is disabled."
                         ),
-                        mermaid_code=normalized_current_code or _default_mermaid_template(diagram_type),
+                        mermaid_code=current_code or _default_mermaid_template(diagram_type),
                         source="llm_strict_blocked",
                         phase="update" if has_code else "initial",
                         change_summary="LLM unavailable in strict mode.",
@@ -431,22 +429,20 @@ class MermaidDiagramOrchestrator:
                     diagram_type=diagram_type,
                     user_message=observed.user_message,
                     chat_history=chat_history,
-                    current_code=normalized_current_code,
+                    current_code=current_code,
                     reason="LLM disabled.",
                 )
             )
 
         try:
             if has_code:
-                turn = self._run_llm_update(
-                    diagram_type, user_message, chat_history, normalized_current_code
-                )
+                turn = self._run_llm_update(diagram_type, user_message, chat_history, current_code)
                 turn, ok, reason = self._verify_or_repair_llm_turn(
                     diagram_type=diagram_type,
                     turn=turn,
                     user_message=user_message,
                     chat_history=chat_history,
-                    current_code=normalized_current_code,
+                    current_code=current_code,
                 )
                 if ok:
                     return finish(turn)
@@ -454,7 +450,7 @@ class MermaidDiagramOrchestrator:
                     return finish(
                         MermaidTurn(
                             assistant_message=f"LLM-only mode rejected output at verify step: {reason}",
-                            mermaid_code=normalized_current_code or _default_mermaid_template(diagram_type),
+                            mermaid_code=current_code or _default_mermaid_template(diagram_type),
                             source="llm_strict_verify",
                             phase="update",
                             change_summary="LLM output failed verification in strict mode.",
@@ -466,7 +462,7 @@ class MermaidDiagramOrchestrator:
                         diagram_type=diagram_type,
                         user_message=observed.user_message,
                         chat_history=chat_history,
-                        current_code=normalized_current_code,
+                        current_code=current_code,
                         reason=f"verify failed: {reason}",
                     )
                 )
@@ -481,14 +477,14 @@ class MermaidDiagramOrchestrator:
             if ok:
                 return finish(turn)
             if strict_llm:
-                    return finish(
-                        MermaidTurn(
-                            assistant_message=f"LLM-only mode rejected initial output at verify step: {reason}",
-                            mermaid_code=normalized_current_code or _default_mermaid_template(diagram_type),
-                            source="llm_strict_verify",
-                            phase="initial",
-                            change_summary="Initial LLM output failed verification in strict mode.",
-                        ),
+                return finish(
+                    MermaidTurn(
+                        assistant_message=f"LLM-only mode rejected initial output at verify step: {reason}",
+                        mermaid_code=current_code or _default_mermaid_template(diagram_type),
+                        source="llm_strict_verify",
+                        phase="initial",
+                        change_summary="Initial LLM output failed verification in strict mode.",
+                    ),
                     allow_recovery=False,
                 )
             return finish(
@@ -496,7 +492,7 @@ class MermaidDiagramOrchestrator:
                     diagram_type=diagram_type,
                     user_message=observed.user_message,
                     chat_history=chat_history,
-                    current_code=normalized_current_code,
+                    current_code=current_code,
                     reason=f"verify failed: {reason}",
                 )
             )
@@ -505,7 +501,7 @@ class MermaidDiagramOrchestrator:
                 return finish(
                     MermaidTurn(
                         assistant_message=f"LLM-only mode blocked fallback after LLM error: {exc}",
-                        mermaid_code=normalized_current_code or _default_mermaid_template(diagram_type),
+                        mermaid_code=current_code or _default_mermaid_template(diagram_type),
                         source="llm_strict_error",
                         phase="update" if has_code else "initial",
                         change_summary="LLM failed and fallback is disabled in strict mode.",
@@ -517,7 +513,7 @@ class MermaidDiagramOrchestrator:
                     diagram_type=diagram_type,
                     user_message=observed.user_message,
                     chat_history=chat_history,
-                    current_code=normalized_current_code,
+                    current_code=current_code,
                     reason=f"LLM call error: {exc}",
                 )
             )
@@ -974,13 +970,6 @@ def sanitize_mermaid_code(diagram_type: str, raw_code: str, fallback_code: str =
         stripped = f"{expected_header}\n{stripped}"
 
     return stripped.rstrip() + "\n"
-
-
-def _normalize_current_code_for_type(diagram_type: str, current_code: str) -> str:
-    raw = (current_code or "").strip()
-    if not raw:
-        return ""
-    return sanitize_mermaid_code(diagram_type, raw, raw)
 
 
 def _strip_code_fence(text: str) -> str:

@@ -389,27 +389,6 @@ def test_mermaid_generation_can_start_from_attachment_prompt():
     assert "Receive mail" in turn.mermaid_code or "Quick reply" in turn.mermaid_code
 
 
-def test_mermaid_generation_enforces_selected_type_for_all_diagrams():
-    expected_headers = {
-        "Sequence": "sequenceDiagram",
-        "State": "stateDiagram-v2",
-        "ER": "erDiagram",
-        "Class": "classDiagram",
-        "Gantt": "gantt",
-    }
-    wrong_code = "classDiagram\n    class X\n"
-
-    orchestrator = MermaidDiagramOrchestrator(llm_client=DisabledClient())
-    for diagram_type, header in expected_headers.items():
-        turn = orchestrator.run_turn(
-            diagram_type=diagram_type,
-            user_message="update diagram with one more step",
-            chat_history=[{"role": "user", "content": "initial"}],
-            current_code=wrong_code,
-        )
-        assert turn.mermaid_code.startswith(header + "\n")
-
-
 def test_mermaid_llm_no_change_triggers_verify_fallback():
     orchestrator = MermaidDiagramOrchestrator(llm_client=MermaidNoChangeStubClient())
     current_code = "sequenceDiagram\n    participant C as Client\n"
