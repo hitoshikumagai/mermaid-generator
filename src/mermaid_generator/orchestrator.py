@@ -104,6 +104,9 @@ class FlowchartOrchestrator:
     ) -> AgentTurn:
         has_graph = bool(current_graph and current_graph.get("nodes"))
 
+        if not has_graph and _should_force_initial_draft(user_message):
+            return self._run_preparsed_initial(user_message, current_scope)
+
         if not self.llm_client.is_enabled():
             if strict_llm:
                 return AgentTurn(
@@ -154,6 +157,26 @@ class FlowchartOrchestrator:
             )
             fallback.source = "fallback"
             return fallback
+
+    def _run_preparsed_initial(self, user_message: str, current_scope: str) -> AgentTurn:
+        graph_data = build_structured_flow_graph(user_message)
+        scope_summary = current_scope or _truncate_scope_text(user_message)
+        return AgentTurn(
+            assistant_message=(
+                "Generated an initial draft flowchart from your long structured text. "
+                "Refine with follow-up instructions."
+            ),
+            scope_summary=scope_summary,
+            graph_data=graph_data,
+            mode="visualize",
+            source="preparsed",
+            impact={
+                "phase": "initial",
+                "message": "Initial draft generated from structured markdown input.",
+                "impacted_node_ids": sorted([node["id"] for node in graph_data["nodes"]]),
+                "impacted_edge_ids": sorted([edge["id"] for edge in graph_data["edges"]]),
+            },
+        )
 
     def _run_llm_initial(
         self,
