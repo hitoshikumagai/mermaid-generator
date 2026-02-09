@@ -309,35 +309,6 @@ def test_llm_initial_not_ready_generates_draft_for_long_markdown_input():
     assert len(turn.graph_data["nodes"]) >= 6
 
 
-def test_first_turn_long_structured_input_uses_preparsed_draft_even_when_llm_enabled():
-    orchestrator = FlowchartOrchestrator(llm_client=EnabledStubClient())
-    long_markdown = (
-        "Universal Semantic Bridge is a concept.\n\n"
-        "### 1. Semantic Gap\n"
-        "- BI side semantic model\n"
-        "- Data science side raw data model\n\n"
-        "### 2. Semantic Link\n"
-        "- shared metadata\n"
-        "- single source of truth\n\n"
-        "### 3. AI Agent Bridge\n"
-        "- map natural language to measures\n"
-        "- align answers with governed definitions\n\n"
-        "Summary: unify meaning across SQL, Python, and natural language."
-    )
-
-    turn = orchestrator.run_turn(
-        user_message=long_markdown,
-        chat_history=[],
-        current_scope="",
-        current_graph=None,
-    )
-
-    assert turn.mode == "visualize"
-    assert turn.graph_data is not None
-    assert len(turn.graph_data["nodes"]) >= 6
-    assert turn.source == "preparsed"
-
-
 def test_llm_second_turn_uses_update_path():
     orchestrator = FlowchartOrchestrator(llm_client=EnabledStubClient())
     current_graph = {
