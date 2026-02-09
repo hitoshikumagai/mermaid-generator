@@ -1,5 +1,6 @@
 from src.mermaid_generator.graph_logic import build_mock_graph
 from src.mermaid_generator.diagram_validator import ValidationFinding, ValidationReport
+from src.mermaid_generator.attachment_prompt import build_attachment_generation_prompt
 from src.mermaid_generator.orchestrator import (
     FlowchartOrchestrator,
     MermaidDiagramOrchestrator,
@@ -367,6 +368,25 @@ def test_mermaid_fallback_update_builds_from_prose_instruction():
     assert "A-->>C: response" not in turn.mermaid_code
     assert turn.mermaid_code.count("->>") >= 2
     assert "メール処理" in turn.mermaid_code
+
+
+def test_mermaid_generation_can_start_from_attachment_prompt():
+    orchestrator = MermaidDiagramOrchestrator(llm_client=DisabledClient())
+    prompt = build_attachment_generation_prompt(
+        attachment_text="1. Receive mail\n2. Quick reply\n3. Archive",
+        diagram_type="Sequence",
+    )
+    turn = orchestrator.run_turn(
+        diagram_type="Sequence",
+        user_message=prompt,
+        chat_history=[],
+        current_code="",
+    )
+
+    assert turn.source == "fallback"
+    assert turn.phase == "initial"
+    assert "sequenceDiagram" in turn.mermaid_code
+    assert "Receive mail" in turn.mermaid_code or "Quick reply" in turn.mermaid_code
 
 
 def test_mermaid_llm_no_change_triggers_verify_fallback():

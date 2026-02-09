@@ -60,6 +60,14 @@ from src.mermaid_generator.diagram_management_assistant import (  # noqa: E402
 from src.mermaid_generator.parent_class_assistant import (  # noqa: E402
     ParentClassAssistant,
 )
+from src.mermaid_generator.attachment_text import (  # noqa: E402
+    EmptyAttachmentError,
+    UnsupportedAttachmentError,
+    extract_text_from_attachment,
+)
+from src.mermaid_generator.attachment_prompt import (  # noqa: E402
+    build_attachment_generation_prompt,
+)
 from src.mermaid_generator.session_memory import (  # noqa: E402
     append_template_memory,
     build_memory_context,
@@ -221,6 +229,10 @@ def ensure_state() -> None:
         st.session_state.llm_model = str(os.getenv("OPENAI_MODEL", "gpt-4o-mini"))
     if "flow_preview_fullscreen" not in st.session_state:
         st.session_state.flow_preview_fullscreen = False
+    if "attachment_text_by_type" not in st.session_state:
+        st.session_state.attachment_text_by_type = {}
+    if "attachment_meta_by_type" not in st.session_state:
+        st.session_state.attachment_meta_by_type = {}
 
     st.session_state.flow_state = coerce_flow_state(st.session_state.flow_state)
 
@@ -256,6 +268,20 @@ def ensure_state() -> None:
 
 def get_mermaid_code(diagram_type: str) -> str:
     return str(st.session_state.mermaid_code_by_type.get(diagram_type, ""))
+
+
+def get_attachment_text(diagram_type: str) -> str:
+    return str(st.session_state.attachment_text_by_type.get(diagram_type, "") or "")
+
+
+def set_attachment_text(diagram_type: str, text: str, filename: str) -> None:
+    st.session_state.attachment_text_by_type[diagram_type] = text
+    st.session_state.attachment_meta_by_type[diagram_type] = {"filename": filename, "chars": len(text)}
+
+
+def clear_attachment_text(diagram_type: str) -> None:
+    st.session_state.attachment_text_by_type.pop(diagram_type, None)
+    st.session_state.attachment_meta_by_type.pop(diagram_type, None)
 
 
 def set_mermaid_code(diagram_type: str, code: str, sync_editor: bool = False) -> None:
@@ -1043,6 +1069,68 @@ with st.sidebar:
         help="LLM Only disables all fallback generation.",
     )
     st.session_state.llm_mode_by_type[diagram_type] = llm_mode
+
+    with st.expander("Attachment Input (txt/md)", expanded=False):
+        uploaded = st.file_uploader(
+            "Upload attachment",
+            type=None,
+            key=f"attachment_file_{diagram_type.lower()}",
+        )
+        if st.button("Extract Attachment Text", key=f"extract_attachment_{diagram_type.lower()}"):
+            if uploaded is None:
+                st.warning("Attach a .txt or .md file first.")
+            else:
+                try:
+                    extracted_text = extract_text_from_attachment(uploaded.name, uploaded.getvalue())
+                    set_attachment_text(diagram_type, extracted_text, uploaded.name)
+                    st.success(f"Extracted text from {uploaded.name}.")
+                except UnsupportedAttachmentError as exc:
+                    st.error(str(exc))
+                except EmptyAttachmentError as exc:
+                    st.error(str(exc))
+
+        stored_text = get_attachment_text(diagram_type)
+        if stored_text:
+            meta = st.session_state.attachment_meta_by_type.get(diagram_type, {})
+            st.caption(
+                f"Stored attachment: {meta.get('filename', 'unknown')} "
+                f"({meta.get('chars', len(stored_text))} chars)"
+            )
+            st.text_area(
+                "Extracted Text Preview",
+                value=stored_text,
+                height=150,
+                disabled=True,
+            )
+            if st.button("Clear Attachment Text", key=f"clear_attachment_{diagram_type.lower()}"):
+                clear_attachment_text(diagram_type)
+                st.rerun()
+
+            if st.button(
+                "Generate Diagram From Attachment",
+                key=f"generate_from_attachment_{diagram_type.lower()}",
+                use_container_width=True,
+            ):
+                if selected_mode != "Orchestration":
+                    st.warning("Switch Work Mode to Orchestration to generate from attachment.")
+                else:
+                    filename = str(meta.get("filename", "attachment"))
+                    generation_prompt = build_attachment_generation_prompt(
+                        attachment_text=stored_text,
+                        diagram_type=diagram_type,
+                    )
+                    note = f"[attachment:{filename}] generate diagram"
+                    if diagram_type == "Flowchart":
+                        st.session_state.chat_history.append({"role": "user", "content": note})
+                        run_agent_turn(generation_prompt)
+                    else:
+                        history = st.session_state.mermaid_chat_history_by_type.setdefault(diagram_type, [])
+                        history.append({"role": "user", "content": note})
+                        run_mermaid_agent_turn(diagram_type, generation_prompt)
+                    st.success("Generated diagram from attachment text.")
+                    st.rerun()
+        else:
+            st.caption("No extracted attachment text in session.")
 
     if diagram_type == "Flowchart":
         templates = list_flowchart_templates()
